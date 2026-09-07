@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "==> Checking code formatting (cargo fmt)..."
+cargo fmt --check
+
+echo "==> Running static analysis (cargo clippy)..."
+cargo clippy --workspace --all-targets -- -D warnings
+
+echo "==> Running test suite (cargo test)..."
+cargo test --workspace
+
+echo "==> Running hot-path benchmarks (cargo bench)..."
+cargo bench --workspace
+
+echo "==> Building documentation (cargo doc)..."
+cargo doc --workspace --no-deps
+
+echo "==> All quality gates passed successfully!"
