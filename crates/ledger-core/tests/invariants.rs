@@ -198,7 +198,6 @@ proptest! {
     ) {
         let (mut ledger, pool, user_ids, mut shadow) = seeded_ledger();
         let mut next_tx_id = 1000u128;
-        // Clock starts far above the seeding timestamps and advances strictly per action.
         let mut clock = 1_000_000u64;
         let mut active_pending: Vec<(TransferId, usize, usize, Amount)> = Vec::new();
 
@@ -393,7 +392,6 @@ proptest! {
             matches!(event, LedgerEvent::TransferPendingVoided { .. })
         });
         let Some(void_index) = void_index else {
-            // No void event was generated in this run; nothing to corrupt.
             return Ok(());
         };
 

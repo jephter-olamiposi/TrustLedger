@@ -1,0 +1,10 @@
+{
+  "tolerance_factor": 2.0,
+  "comment": "Committed regression-baseline bounds (ADR-0008). `recorded` = criterion 0.7.0 median ns/iteration measured with --save-baseline gate; the gate fails when a future median exceeds `recorded * tolerance_factor`. The 2x factor is deliberate: CI runs on ubuntu-latest and developer machines differ, so this is a loud cross-machine guard, not a precise comparator. Re-record after intentional performance work using the protocol in scripts/bench_gate.py.",
+  "recorded": {
+    "create_transfer": 229,
+    "two_phase_round_trip": 627,
+    "apply_batch": 76130,
+    "replay": 41249521
+  }
+}

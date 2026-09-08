@@ -10,8 +10,11 @@ cargo clippy --workspace --all-targets -- -D warnings
 echo "==> Running test suite (cargo test)..."
 cargo test --workspace
 
-echo "==> Running hot-path benchmarks (cargo bench)..."
-cargo bench --workspace
+echo "==> Running durability benchmark (cargo bench -p wal)..."
+cargo bench -p wal
+
+echo "==> Running hot-path benchmark + regression gate (criterion, baseline.json)..."
+python3 scripts/bench_gate.py
 
 echo "==> Building documentation (cargo doc)..."
 cargo doc --workspace --no-deps

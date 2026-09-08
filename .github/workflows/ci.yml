@@ -39,8 +39,56 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
-      - name: Bench (harness)
-        run: cargo bench --workspace
+      - name: Bench (wal durability harness)
+        run: cargo bench -p wal
+
+      - name: Bench regression gate (ledger-core criterion + baseline.json)
+        run: python3 scripts/bench_gate.py
 
       - name: Docs
         run: cargo doc --workspace --no-deps
+
+  msrv:
+    name: MSRV (Rust 1.80)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MSRV toolchain
+        uses: dtolnay/rust-toolchain@1.80.0
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-msrv-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Check all targets on MSRV
+        # Cargo.lock is pinned with postcard 1.1.3, crc32c 0.6.8 and criterion
+        # =0.7.0 (its 0.8+ line raises MSRV to 1.86), so this job proves the
+        # declared rust-version (Cargo.toml) never silently drifts.
+        run: cargo check --workspace --all-targets --locked
+
+  deny:
+    name: Supply chain (cargo-deny)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        checks:
+          - advisories
+          - bans licenses sources
+    # A freshly published upstream advisory must not silently block every PR;
+    # the advisories job records it but stays green. bans/licenses/sources
+    # remain hard gates.
+    continue-on-error: ${{ matrix.checks == 'advisories' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: cargo-deny for (${{ matrix.checks }})
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check ${{ matrix.checks }}

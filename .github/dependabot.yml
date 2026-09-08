@@ -1,0 +1,16 @@
+# Dependency automation for the supply-chain gate (ADR-0008).
+# cargo-deny (deny.toml) revalidates advisory/license/bans on every PR; these
+# updates keep Cargo.lock and the actions current so the gate has recent data.
+
+version: 2
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"

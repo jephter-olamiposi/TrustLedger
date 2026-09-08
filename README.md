@@ -1,25 +1,62 @@
 # TrustLedger
 
 A distributed double-entry settlement ledger in Rust with on-chain (Solana)
-finality. Public portfolio flagship — production-grade, senior-citable code.
+finality. It is:
 
-## Architecture
+* **Correct**: balances can't leak. Conservation, transfer structure, and
+  account lifecycle are enforced at the mutation boundary and proven by a
+  property suite, not inferred from tests that happen to pass.
 
-| Layer | Crate | Status |
-| --- | --- | --- |
-| Ledger core | `ledger-core` | v0.1 shipped |
-| Write-ahead log | `crates/wal` | planned |
-| Raft consensus | `crates/raft` | planned |
-| gRPC ingress | `crates/ingest` | planned |
-| Merkle roots | `crates/merkle` | planned |
-| Solana settlement | `crates/solana-settle` | planned |
-| Observability | `crates/observability` | planned |
-| Reference demo | `apps/demo` | planned |
+* **Durable**: acknowledged means fsynced. Every mutation is journaled to a
+  checksummed write-ahead log, and crash recovery is tested at every byte
+  boundary of the file.
 
-## ledger-core
+* **Fast**: measured, not estimated. Criterion medians on the hot path exceed
+  1M transfers/sec (ADR-0001's promise), and the full throughput table is
+  committed to `docs/BENCHMARKS.md`.
 
-The correctness-critical heart: accounts, two-phase transfers, `u128`
-scaled-decimal math, and balances-can't-leak invariants.
+[![CI status][ci-badge]][ci-url]
+[![license MIT or Apache-2.0][license-badge]][license]
+
+[ci-badge]: https://img.shields.io/github/actions/workflow/status/jephter-olamiposi/TrustLedger/ci.yml?branch=main&label=CI
+[ci-url]: https://github.com/jephter-olamiposi/TrustLedger/actions
+[license-badge]: https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg
+[license]: https://github.com/jephter-olamiposi/TrustLedger/blob/main/LICENSE
+
+[GitHub](https://github.com/jephter-olamiposi/TrustLedger) |
+[ADRs](docs/adr/) |
+[WAL runbook](docs/WAL-RUNBOOK.md) |
+[Benchmarks](docs/BENCHMARKS.md)
+
+## Overview
+
+TrustLedger is an event-sourced, double-entry ledger written as a Rust
+workspace. The ledger engine is pure and deterministic — the durability layer
+owns the disk. At a high level it provides:
+
+* **`ledger-core`** — the accounting engine: accounts, two-phase (pending →
+  posted/voided) transfers, `u128` scaled-decimal math, and
+  balances-can't-leak invariants. Replay is fail-loud and byte-for-byte
+  deterministic. *(v0.1 shipped)*
+* **`crates/wal`** — an append-only stream of length-prefixed, CRC32C-checksummed
+  frames with torn-write recovery to the last verified record and snapshot
+  checkpoints to bound restart replay. *(v0.1 shipped)*
+* **`crates/raft`** — three-node consensus. *(planned)*
+* **`crates/ingest`** — tonic/gRPC, micro-batched, bounded queues with
+  backpressure. *(planned)*
+* **`crates/merkle` + `crates/solana-settle`** — Merkle Mountain Range roots
+  committed to a Solana PDA; USDC legs. *(planned)*
+* **`apps/demo`** — reference client, e2e suite, and the "Verify transfer"
+  surface. *(planned)*
+
+## Example
+
+Add the crate, then run a two-phase transfer from vault to customer:
+
+```toml
+[dependencies]
+ledger_core = { path = "crates/ledger-core" }
+```
 
 ```rust
 use ledger_core::account::{AccountFlags, AccountType};
@@ -27,6 +64,7 @@ use ledger_core::amount::{Amount, Scale};
 use ledger_core::id::{AccountId, TransferId};
 use ledger_core::transfer::Transfer;
 use ledger_core::Ledger;
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 let mut ledger = Ledger::new(Scale::usdc());
 let vault = AccountId::new(1);
@@ -35,80 +73,148 @@ let alice = AccountId::new(2);
 ledger.create_account(vault, AccountType::Asset, AccountFlags::bank_asset(), Scale::usdc(), 0)?;
 ledger.create_account(alice, AccountType::Liability, AccountFlags::customer(), Scale::usdc(), 0)?;
 
-// Two-phase pending reservation followed by settlement capture
 let hold = Transfer::new_pending(TransferId::new(1), vault, alice, Amount::new(1_000_000), 0)?;
 ledger.create_pending(hold)?;
 ledger.post_pending(TransferId::new(1), TransferId::new(2), Amount::new(1_000_000), 0)?;
+ledger.verify_invariants()?;
+# Ok(())
+# }
 ```
 
-This two-phase flow is compiled as a doctest in the crate docs
-(`cargo test --doc`), so the documented API cannot drift from the code.
+This README is also the `ledger-core` crate documentation
+(`#![doc = include_str!("../../README.md")]` in `src/lib.rs`), so the example
+above is a compiled doctest: `cargo test --doc` runs it and documented API
+cannot drift from the code.
 
-### Invariants
+## Safety model
 
 The ledger enforces, and a property suite proves:
 
-- **Conservation** — total debits equal total credits for both posted and
+* **Conservation** — total debits equal total credits for both posted and
   pending balances.
-- **Structure** — every pending transfer is exactly backed by its debit and
+* **Structure** — every pending transfer is exactly backed by its debit and
   credit accounts' pending reservations, and a posted transfer may only link a
   hold that exists and is itself posted (checked eagerly at the mutation
-  boundary, not just at `verify_invariants`).
-- **Encapsulation** — `Scale`, `Amount`, `AccountId`, `TransferId` and every
+  boundary, not only at `verify_invariants`).
+* **Encapsulation** — `Scale`, `Amount`, `AccountId`, `TransferId`, and every
   `Transfer` field are private; transfers are only created through validated
-  constructors and the Pending→Posted/Voided lifecycle is a single
-  state machine that rejects illegal moves. A deserialized transfer is
-  re-validated (fresh ID, distinct accounts, non-zero amount, valid hold link)
-  before it can be applied.
-- **Determinism** — accounts and transfers live in `BTreeMap` (ADR-0002), so
+  constructors, and the Pending→Posted/Voided lifecycle is a single state
+  machine that rejects illegal moves. A deserialized transfer is re-validated
+  (fresh ID, distinct accounts, non-zero amount, valid hold link) before it can
+  be applied.
+* **Determinism** — accounts and transfers live in `BTreeMap` (ADR-0002), so
   identical journal output always reproduces identical state;
   `Ledger::replay` equals the original ledger by value, byte-for-byte.
-- **Fail-loud replay** — a journal whose voided amount contradicts the
-  reservation it encodes, or whose timestamps run backwards, is rejected with
-  a typed `LedgerError` instead of replaying to a wrong-but-plausible state.
-- **Monotonic timestamps** — every journal event must carry a non-decreasing
+* **Fail-loud replay** — a journal whose voided amount contradicts the
+  reservation it encodes, or whose timestamps run backwards, is rejected with a
+  typed `LedgerError` instead of replaying to a wrong-but-plausible state.
+* **Monotonic timestamps** — every journal event must carry a non-decreasing
   `timestamp`; older events are rejected (`TimestampBehindPrior`).
-- **Zero overdraft and zero leakage** — `available_liability`/`available_asset`
+* **Zero overdraft and zero leakage** — `available_liability`/`available_asset`
   never report negative money (they read zero when empty, ADR-0004), and
-  breaches are typed `InsufficientFunds` errors.
-- **Account lifecycle** — `close_account` freezes an account (both legs)
+  breaches surface as typed `InsufficientFunds` errors.
+* **Account lifecycle** — `close_account` freezes an account (both legs)
   through the same journaled, replayable path as every other mutation.
 
-Design decisions are recorded in the ADRs under [`docs/adr`](docs/adr/):
+### Durability
 
-- [ADR-0001](docs/adr/ADR-0001-core-ledger.md) — core architecture and financial invariants
-- [ADR-0002](docs/adr/ADR-0002-deterministic-indexes.md) — `BTreeMap` for deterministic iteration
-- [ADR-0003](docs/adr/ADR-0003-journal-versioning.md) — journal versioning before the WAL
-- [ADR-0004](docs/adr/ADR-0004-availability-lifecycle.md) — availability semantics and close lifecycle
-- [ADR-0005](docs/adr/ADR-0005-transfer-state-typing.md) — runtime state gates (typestate deferred)
-- [ADR-0006](docs/adr/ADR-0006-transition-ordering-timestamps.md) — compute-then-write ordering, monotonic timestamps
+The ledger stays pure; `crates/wal` owns the disk. A mutation is committed in
+three steps (ADR-0007):
 
-### Testing
+1. **compute** — `ledger.prepare_batch(&[Transfer])` validates the batch and
+   returns the event list without persisting any change;
+2. **durable** — encode with `ledger_core::codec` (postcard, ADR-0003) and
+   `wal.append(&bytes)`, which fsyncs the frame before returning;
+3. **commit** — `ledger.commit_events(&events)` re-validates and applies the
+   same list to memory (ADR-0006's ordering).
 
-- **Unit** (`tests/unit.rs`, 21 tests) — exact-error matrix for every rejection
+```text
+use ledger_core::codec::encode_events;
+use wal::{Wal, WalOptions};
+
+let (mut wal, recovery) = Wal::open("ledger.log", WalOptions::default())?;
+let events = ledger.prepare_batch(&[transfer])?;
+wal.append(&encode_events(&events)?)?;
+ledger.commit_events(&events)?;
+```
+
+Each record is a length-prefixed, CRC32C-checksummed frame (`magic "LETW"`,
+version, monotonically incrementing `seq`). Crash recovery scans the prefix,
+truncates a torn tail to the last verified record, and hard-fails on a
+well-formed-but-divergent `seq` (`WalError::SeqMismatch`) rather than guessing at
+frame boundaries. Snapshot checkpoints (`SnapshotFile`, atomic rename + parent
+fsync) bound restart replay; a corrupt or stale snapshot falls back to full wal
+replay. Failure modes and operator response live in
+[`docs/WAL-RUNBOOK.md`][runbook].
+
+The guarantee — **acknowledged = durable, crash rolls back only to a verified
+record boundary** — is proven to the byte: `crates/wal/tests/crash.rs` and
+`crates/ledger-core/tests/wal_e2e.rs` truncate the wal at every byte offset of a
+mixed journal and assert the rebuilt ledger equals exactly the acked prefix,
+byte-for-byte, plus `verify_invariants`.
+
+## Testing
+
+* **Unit** (`tests/unit.rs`, 21 tests) — exact-error matrix for every rejection
   path: double-post, post-after-void, void-after-post, duplicate IDs,
   same-account, zero-amount, closed-account, partial-exceeds-pending,
   timestamp-in-past, corrupted journal.
-- **Property** (`tests/invariants.rs`, 3 proptests, 200 cases) — a shadow
-  model asserts the ledger equals an independent balance computation after
-  *every* action; a corrupted-journal variant proves replay fails loudly.
-- **Doctest** — the README flow above compiles and runs.
+* **Property** (`tests/invariants.rs`, 3 proptests, 200 cases) — a shadow model
+  asserts the ledger equals an independent balance computation after *every*
+  action; a corrupted-journal variant proves replay fails loudly.
+* **Rollback matrix** (`src/ledger.rs`) — every `LedgerEvent` variant is applied
+  as part of a batch whose later event fails; the batch must roll back to the
+  exact pre-batch ledger, so a forgotten undo pre-image for any event kind is
+  caught by a test, not by an incident.
+* **Doctest** — the README example above is the crate-root documentation, so
+  `cargo test --doc` compiles and runs it when it runs the suite.
+* **wal** (`crates/wal`: 34 tests) — every-byte-boundary crash sweeps over
+  byte-corrupted and partially-written logs, proving recovery lands exactly on
+  the last verified frame ([runbook][runbook]).
 
-Requires the pinned Rust toolchain (`rust-toolchain.toml`); run
-`./scripts/check` for the full gate (fmt + clippy `-D warnings` + tests +
-benchmarks + docs). CI runs the same gate on every push.
+## Benchmarks
 
-### Benchmark
+Hot-path throughput is measured by the criterion harness at
+`benches/throughput.rs` (statistical medians, [docs/BENCHMARKS.md][benchmarks]),
+and `scripts/bench_gate.py` fails CI when a median exceeds its committed bound
+in `docs/benchmarks/baseline.json` (ADR-0008). Medians on this development
+machine (Apple silicon, `profile.release` with LTO + overflow checks),
+2026-09-08:
 
-Hot-path throughput is measured by the zero-dependency harness at
-`benches/throughput.rs` (see [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) for
-methodology and variance notes). Representative numbers on this development
-machine (Apple silicon, `profile.release` with LTO + overflow checks):
+* `create_transfer`: ~4.4M transfers/sec (~229 ns/op)
+* two-phase round-trip: ~1.6M pairs/sec (~627 ns/op)
+* `apply_batch` (256/batch): ~3.4M transfers/sec (~297 ns/op)
+* `Ledger::replay`: ~4.9M events/sec (~206 ns/op)
 
-- `create_transfer`: ~4.9–5.3M transfers/sec (~188–205 ns/op)
-- two-phase round-trip: ~3.9M pairs/sec (~257 ns/op)
-- `apply_batch` (256/batch): ~0.8M transfers/sec (~1225 ns/op)
-- `Ledger::replay`: ~5.6M events/sec (~177 ns/op)
-
-All exceed the >1M transfers/sec claim in ADR-0001, confirming the
+Each exceeds the >1M transfers/sec claim in ADR-0001, confirming the
 `BTreeMap` determinism cost is not observable on the hot path.
+
+## Supported Rust versions
+
+The workspace pins MSRV 1.80 and a rolling-patch toolchain
+(`rust-toolchain.toml`). CI runs an MSRV job (`cargo check --workspace
+--all-targets --locked` on 1.80.0) plus a `cargo-deny` supply-chain job on
+every push (ADR-0008). The committed lockfile is the source of truth for the
+1.80-compatible pins: criterion =0.7.0, proptest 1.8.0, and a couple of
+transitive holds — new majors of criterion (0.8) and proptest (1.9+) and
+edition-2024 transitives (e.g. getrandom 0.4, clap_lex 1.x) each raise the
+floor, so an MSRV bump is a reviewed decision, not a side-effect of
+`cargo update`.
+
+## Contributing
+
+Run the full gate before pushing — `./scripts/check` runs fmt, clippy
+`-D warnings`, the test suite, both benchmark harnesses, and the regression
+gate. CI runs the same gate plus MSRV and supply-chain jobs. Every architecture
+decision is recorded as an ADR under [`docs/adr`][adrs].
+
+## License
+
+This project is licensed under either [MIT][mit] or [Apache-2.0][apache], at
+your option.
+
+[mit]: https://github.com/jephter-olamiposi/TrustLedger/blob/main/LICENSE-MIT
+[apache]: https://github.com/jephter-olamiposi/TrustLedger/blob/main/LICENSE-APACHE
+[runbook]: docs/WAL-RUNBOOK.md
+[benchmarks]: docs/BENCHMARKS.md
+[adrs]: docs/adr/

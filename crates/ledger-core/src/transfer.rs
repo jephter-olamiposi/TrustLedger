@@ -228,6 +228,15 @@ impl Transfer {
 
         Ok(())
     }
+
+    /// Restore a state captured by the ledger's undo log.
+    ///
+    /// The ledger only calls this with states taken from transfers that had
+    /// already passed validation, so the reverse lifecycle (Posted/Voided back
+    /// to Pending during rollback) is legal here, unlike [`Self::transition_to`].
+    pub(crate) fn restore_state(&mut self, state: TransferState) {
+        self.state = state;
+    }
 }
 
 #[cfg(test)]

@@ -566,8 +566,6 @@ fn test_insufficient_funds_reports_accurate_available_balance() {
             1,
         )
         .unwrap();
-
-    // Deposit $100
     ledger
         .create_transfer(
             Transfer::new_immediate(
@@ -580,8 +578,6 @@ fn test_insufficient_funds_reports_accurate_available_balance() {
             .unwrap(),
         )
         .unwrap();
-
-    // Reserve $40 hold -> spendable balance is now $60
     ledger
         .create_pending(
             Transfer::new_pending(
@@ -594,8 +590,6 @@ fn test_insufficient_funds_reports_accurate_available_balance() {
             .unwrap(),
         )
         .unwrap();
-
-    // Try to spend $70 -> should fail with requested: 70, available: 60
     let err = ledger
         .create_transfer(
             Transfer::new_immediate(
@@ -718,23 +712,17 @@ fn test_apply_batch_atomic_rollback() {
             1,
         )
         .unwrap();
-
-    // Seed user_a with $100
     ledger
         .create_transfer(
             Transfer::new_immediate(TransferId::new(1), pool, user_a, Amount::new(100), 2).unwrap(),
         )
         .unwrap();
-
-    // Batch: transfer $40 (valid), then $80 (invalid - exceeds remaining $60)
     let batch = vec![
         Transfer::new_immediate(TransferId::new(2), user_a, user_b, Amount::new(40), 3).unwrap(),
         Transfer::new_immediate(TransferId::new(3), user_a, user_b, Amount::new(80), 4).unwrap(),
     ];
 
     assert!(ledger.apply_batch(&batch).is_err());
-
-    // Atomic rollback proof: transfer #2 was NOT applied!
     assert_eq!(
         ledger.get_account(user_a).unwrap().balance.debits_posted,
         Amount::ZERO,
@@ -775,8 +763,6 @@ fn test_invalid_transfer_state_typed_error() {
 
     let pending =
         Transfer::new_pending(TransferId::new(1), pool, user, Amount::new(50), 2).unwrap();
-
-    // Trying to create a pending transfer with create_transfer expects Posted
     let err = ledger.create_transfer(pending).unwrap_err();
     assert_eq!(
         err,
@@ -813,7 +799,6 @@ fn test_timestamp_monotonicity_rejects_out_of_order_events() {
         )
         .unwrap();
 
-    // A tie with the last recorded timestamp is allowed.
     ledger
         .create_transfer(
             Transfer::new_immediate(TransferId::new(1), pool, user, Amount::new(100), 20).unwrap(),
@@ -833,7 +818,6 @@ fn test_timestamp_monotonicity_rejects_out_of_order_events() {
         }
     );
 
-    // A rejected event must not disturb the audit watermark.
     ledger
         .create_transfer(
             Transfer::new_immediate(TransferId::new(3), pool, user, Amount::new(100), 25).unwrap(),
@@ -986,7 +970,6 @@ fn test_pending_lifecycle_rejection_matrix() {
         .create_pending(Transfer::new_pending(pending_id, pool, user, Amount::new(50), 3).unwrap())
         .unwrap();
 
-    // post_pending with a hold already voided is rejected.
     ledger.void_pending(pending_id, 4).unwrap();
     let err = ledger
         .post_pending(pending_id, post_id, Amount::new(50), 5)
@@ -1000,7 +983,6 @@ fn test_pending_lifecycle_rejection_matrix() {
         }
     );
 
-    // a second void of the same transfer is rejected.
     let err = ledger.void_pending(pending_id, 6).unwrap_err();
     assert_eq!(
         err,
@@ -1011,7 +993,6 @@ fn test_pending_lifecycle_rejection_matrix() {
         }
     );
 
-    // void after post is rejected.
     let mut post_ledger = Ledger::new(Scale::usdc());
     post_ledger
         .create_account(
@@ -1047,7 +1028,6 @@ fn test_pending_lifecycle_rejection_matrix() {
         }
     );
 
-    // a second post of the same hold is rejected.
     let err = post_ledger
         .post_pending(pending_id, TransferId::new(102), Amount::new(50), 6)
         .unwrap_err();

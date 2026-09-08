@@ -2,12 +2,74 @@
 
 use std::collections::BTreeMap;
 
-use crate::account::{Account, AccountFlags, AccountType};
+use serde::{Deserialize, Serialize};
+
+use crate::account::{Account, AccountFlags, AccountType, Balance};
 use crate::amount::{Amount, Scale};
 use crate::error::LedgerError;
 use crate::id::{AccountId, TransferId};
 use crate::journal::LedgerEvent;
 use crate::transfer::{Transfer, TransferState};
+
+/// An operation in a multi-operation batch submitted to the ledger engine.
+///
+/// Batch operations are validated speculatively by [`Ledger::prepare_batch`].
+/// Each operation maps directly to the corresponding state-machine mutation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BatchOp {
+    /// Create a new account with its initial parameters and limits.
+    CreateAccount {
+        /// Account ID.
+        id: AccountId,
+        /// Account type (asset, liability, equity, revenue, expense).
+        account_type: AccountType,
+        /// Account rules and balance constraints.
+        flags: AccountFlags,
+        /// Currency decimal scale.
+        scale: Scale,
+        /// Sequence/wall-clock timestamp of account creation.
+        timestamp: u64,
+    },
+    /// An immediate transfer settling funds between two accounts.
+    Transfer(Transfer),
+    /// A pending transfer that reserves/holds funds without settling.
+    Pending(Transfer),
+    /// Post (settle) a previously created pending hold.
+    PostPending {
+        /// The ID of the pending transfer being settled.
+        pending_id: TransferId,
+        /// The new transfer ID assigned to the posted settlement transfer.
+        post_transfer_id: TransferId,
+        /// The amount to settle (must match or be within pending reservation).
+        amount: Amount,
+        /// Sequence/wall-clock timestamp of this settlement.
+        timestamp: u64,
+    },
+    /// Void (cancel) a previously created pending hold, returning reserved funds.
+    VoidPending {
+        /// The ID of the pending transfer being voided.
+        pending_id: TransferId,
+        /// Sequence/wall-clock timestamp of this cancellation.
+        timestamp: u64,
+    },
+    /// Close an account, preventing any future debits or credits.
+    CloseAccount {
+        /// The ID of the account to close.
+        id: AccountId,
+        /// Sequence/wall-clock timestamp of the closure.
+        timestamp: u64,
+    },
+}
+
+impl From<Transfer> for BatchOp {
+    fn from(transfer: Transfer) -> Self {
+        if transfer.state() == TransferState::Pending {
+            Self::Pending(transfer)
+        } else {
+            Self::Transfer(transfer)
+        }
+    }
+}
 
 /// In-memory ledger holding accounts, transfers, and the event journal.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -166,11 +228,10 @@ impl Ledger {
         self.last_timestamp = self.last_timestamp.max(timestamp);
     }
 
-    /// Re-run the full invariant check right after a mutation in debug/test
-    /// builds, so a drifting invariant is caught the moment it lands instead of
-    /// at the next explicit [`Self::verify_invariants`]. Compiled out entirely
-    /// in release builds; the ledger's own tests and proptests additionally
-    /// verify after every action.
+    /// Re-check all invariants after each mutation in debug/test builds, so a
+    /// bug surfaces at the mutation instead of at the next explicit
+    /// [`Self::verify_invariants`]. Compiled out in release builds; tests and
+    /// proptests also verify after every action.
     #[cfg(debug_assertions)]
     fn check_after_mutation(&self) -> Result<(), LedgerError> {
         self.verify_invariants()
@@ -178,9 +239,9 @@ impl Ledger {
 
     /// Create and immediately settle a transfer between two accounts.
     ///
-    /// Follows the same compute-then-write ordering as [`Self::post_pending`]:
-    /// every fallible operation completes in a read-only pass before the first
-    /// write, so a failure can never leave a half-applied balance change.
+    /// Read-only checks run first, then the balance updates (see
+    /// [`Self::post_pending`] for the same ordering), so a failure can never
+    /// leave a half-applied change.
     ///
     /// # Errors
     ///
@@ -204,8 +265,6 @@ impl Ledger {
 
         self.validate_new_transfer(&transfer)?;
         self.validate_pending_link(&transfer)?;
-
-        // Compute phase: read-only, every `?` completes before the first write.
         let (new_debits_posted, new_credits_posted) = {
             let debit_acc = self
                 .accounts
@@ -230,7 +289,6 @@ impl Ledger {
             (new_debits, new_credits)
         };
 
-        // Write phase: pure assignments; nothing here can fail.
         let debit_acc = self
             .accounts
             .get_mut(&transfer.debit_account_id())
@@ -255,22 +313,240 @@ impl Ledger {
 
     /// Apply a batch of posted transfers atomically in sequence.
     ///
-    /// Either all transfers succeed, or the entire batch rolls back on failure.
+    /// Either all transfers succeed, or the ledger is rolled back to its
+    /// prior state on the first failure.
     ///
     /// # Errors
     ///
     /// Returns [`LedgerError`] on the first transfer that fails validation or balance limits.
     pub fn apply_batch(&mut self, transfers: &[Transfer]) -> Result<(), LedgerError> {
-        let mut checkpoint = self.clone();
-        for transfer in transfers {
-            checkpoint.create_transfer(transfer.clone())?;
-        }
-        *self = checkpoint;
+        let events: Vec<LedgerEvent> = transfers
+            .iter()
+            .map(|transfer| LedgerEvent::TransferPosted {
+                transfer: transfer.clone(),
+            })
+            .collect();
+        let base_journal_len = self.journal.len();
+        let base_timestamp = self.last_timestamp;
+        self.apply_with_undo(&events, base_journal_len, base_timestamp)?;
 
         #[cfg(debug_assertions)]
         self.check_after_mutation()?;
 
         Ok(())
+    }
+
+    /// Validate a batch of operations and return the journal events it would emit,
+    /// without persisting any change to this ledger.
+    ///
+    /// Validation runs speculatively against live state (an O(batch) apply
+    /// with no whole-ledger clone) and is then rolled back; on success this
+    /// ledger is left unchanged and the returned events are exactly what a
+    /// later [`Self::commit_events`] will apply. For the write-ahead flow:
+    /// persist the returned events, then commit them. Committing re-validates
+    /// every event, so it fails cleanly if this ledger changed since the
+    /// prepare (the single-writer wal contract).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LedgerError`] on the first operation that fails validation or
+    /// balance limits; on error, this ledger is unchanged.
+    pub fn prepare_batch(&mut self, ops: &[BatchOp]) -> Result<Vec<LedgerEvent>, LedgerError> {
+        let base_journal_len = self.journal.len();
+        let base_timestamp = self.last_timestamp;
+
+        let mut undo = Vec::new();
+        for op in ops {
+            let mut pre = Vec::new();
+            if let Err(err) = op_pre_images(op, self, &mut pre) {
+                self.rollback(&undo, base_journal_len, base_timestamp);
+                return Err(err);
+            }
+            if let Err(err) = self.apply_batch_op(op) {
+                self.rollback(&undo, base_journal_len, base_timestamp);
+                return Err(err);
+            }
+            undo.extend(pre);
+        }
+
+        let produced = self.journal[base_journal_len..].to_vec();
+        self.rollback(&undo, base_journal_len, base_timestamp);
+        #[cfg(debug_assertions)]
+        self.check_after_mutation()?;
+        Ok(produced)
+    }
+
+    /// Convenience wrapper around [`Self::prepare_batch`] for immediate transfers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LedgerError`] on the first transfer that fails validation or balance limits.
+    pub fn prepare_transfers(
+        &mut self,
+        transfers: &[Transfer],
+    ) -> Result<Vec<LedgerEvent>, LedgerError> {
+        let ops: Vec<BatchOp> = transfers.iter().cloned().map(BatchOp::Transfer).collect();
+        self.prepare_batch(&ops)
+    }
+
+    /// Apply a batch of journal events previously produced by
+    /// [`Self::prepare_batch`].
+    ///
+    /// Each event is re-validated against live state (the same checks replay
+    /// performs), so a stale or duplicated batch cannot be applied twice.
+    /// The whole batch is atomic: a failure rolls the ledger back to its
+    /// prior state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LedgerError`] if any event fails its re-validation or
+    /// application.
+    pub fn commit_events(&mut self, events: &[LedgerEvent]) -> Result<(), LedgerError> {
+        let base_journal_len = self.journal.len();
+        let base_timestamp = self.last_timestamp;
+        self.apply_with_undo(events, base_journal_len, base_timestamp)?;
+
+        #[cfg(debug_assertions)]
+        self.check_after_mutation()?;
+
+        Ok(())
+    }
+
+    /// Apply each event, recording its pre-images so the application can be
+    /// reverted. On the first failure the events applied so far are rolled
+    /// back to `(base_journal_len, base_timestamp)` and the error is
+    /// returned.
+    ///
+    /// Every mutation below is compute-then-write (ADR-0006): all checks run
+    /// before any state changes, so a failing event never leaves a partial
+    /// write for the rollback to clean up.
+    fn apply_with_undo(
+        &mut self,
+        events: &[LedgerEvent],
+        base_journal_len: usize,
+        base_timestamp: u64,
+    ) -> Result<Vec<UndoOp>, LedgerError> {
+        let mut undo = Vec::new();
+        for event in events {
+            let mut pre = Vec::new();
+            if let Err(err) = pre_images(event, self, &mut pre) {
+                self.rollback(&undo, base_journal_len, base_timestamp);
+                return Err(err);
+            }
+            if let Err(err) = self.apply_event(event) {
+                self.rollback(&undo, base_journal_len, base_timestamp);
+                return Err(err);
+            }
+            undo.extend(pre);
+        }
+        Ok(undo)
+    }
+
+    /// Revert every recorded pre-image in reverse order, then restore the
+    /// journal length and timestamp watermark captured before the batch.
+    ///
+    /// Rollback must never fail midway, so reads are guarded: a missing entry
+    /// means the state already diverged and is left as it is rather than
+    /// panicking during recovery of an error path.
+    fn rollback(&mut self, undo: &[UndoOp], base_journal_len: usize, base_timestamp: u64) {
+        for op in undo.iter().rev() {
+            match op {
+                UndoOp::RemoveAccount { id } => {
+                    self.accounts.remove(id);
+                }
+                UndoOp::AccountFlagsBefore { id, flags } => {
+                    if let Some(account) = self.accounts.get_mut(id) {
+                        account.flags = *flags;
+                    }
+                }
+                UndoOp::AccountBalanceBefore { id, balance } => {
+                    if let Some(account) = self.accounts.get_mut(id) {
+                        account.balance = *balance;
+                    }
+                }
+                UndoOp::RemoveTransfer { id } => {
+                    self.transfers.remove(id);
+                }
+                UndoOp::TransferStateBefore { id, state } => {
+                    if let Some(transfer) = self.transfers.get_mut(id) {
+                        transfer.restore_state(*state);
+                    }
+                }
+            }
+        }
+        self.journal.truncate(base_journal_len);
+        self.last_timestamp = base_timestamp;
+    }
+
+    /// Apply one journal event against the live ledger. Shared by
+    /// [`Self::replay`] and [`Self::commit_events`]; every event is
+    /// re-validated instead of trusting the event's claims about balances.
+    fn apply_event(&mut self, event: &LedgerEvent) -> Result<(), LedgerError> {
+        match event {
+            LedgerEvent::AccountCreated {
+                id,
+                account_type,
+                flags,
+                scale,
+                timestamp,
+            } => self.create_account(*id, *account_type, *flags, *scale, *timestamp),
+            LedgerEvent::AccountClosed { id, timestamp } => self.close_account(*id, *timestamp),
+            LedgerEvent::TransferPosted { transfer } => self.create_transfer(transfer.clone()),
+            LedgerEvent::TransferPendingCreated { transfer } => {
+                self.create_pending(transfer.clone())
+            }
+            LedgerEvent::TransferPendingPosted {
+                pending_id,
+                post_transfer_id,
+                amount,
+                timestamp,
+            } => self.post_pending(*pending_id, *post_transfer_id, *amount, *timestamp),
+            LedgerEvent::TransferPendingVoided {
+                pending_id,
+                amount,
+                timestamp,
+            } => {
+                let pending = self
+                    .transfers
+                    .get(pending_id)
+                    .map(|transfer| transfer.amount())
+                    .ok_or(LedgerError::TransferNotFound(*pending_id))?;
+                if pending != *amount {
+                    return Err(LedgerError::JournalVoidedAmountMismatch {
+                        pending_id: *pending_id,
+                        pending,
+                        amount: *amount,
+                    });
+                }
+                self.void_pending(*pending_id, *timestamp)
+            }
+        }
+    }
+
+    /// Apply one batch operation against live ledger state during speculative batch execution.
+    fn apply_batch_op(&mut self, op: &BatchOp) -> Result<(), LedgerError> {
+        match op {
+            BatchOp::CreateAccount {
+                id,
+                account_type,
+                flags,
+                scale,
+                timestamp,
+            } => self.create_account(*id, *account_type, *flags, *scale, *timestamp),
+            BatchOp::Transfer(transfer) => self.create_transfer(transfer.clone()),
+            BatchOp::Pending(transfer) => self.create_pending(transfer.clone()),
+            BatchOp::PostPending {
+                pending_id,
+                post_transfer_id,
+                amount,
+                timestamp,
+            } => self.post_pending(*pending_id, *post_transfer_id, *amount, *timestamp),
+            BatchOp::VoidPending {
+                pending_id,
+                timestamp,
+            } => self.void_pending(*pending_id, *timestamp),
+            BatchOp::CloseAccount { id, timestamp } => self.close_account(*id, *timestamp),
+        }
     }
 
     /// Create a pending transfer that holds funds without settling yet.
@@ -297,8 +573,6 @@ impl Ledger {
         }
 
         self.validate_new_transfer(&transfer)?;
-
-        // Compute phase: read-only, every `?` completes before the first write.
         let (new_debits_pending, new_credits_pending) = {
             let debit_acc = self
                 .accounts
@@ -323,7 +597,6 @@ impl Ledger {
             (new_debits, new_credits)
         };
 
-        // Write phase: pure assignments; nothing here can fail.
         let debit_acc = self
             .accounts
             .get_mut(&transfer.debit_account_id())
@@ -347,11 +620,10 @@ impl Ledger {
         Ok(())
     }
 
-    /// Check that a new transfer's identity and shape are valid: the ID is unused,
-    /// the account pair is distinct, the amount is non-zero, and the
-    /// cross-field shape is legal. The ledger re-checks these at the mutation
-    /// boundary because a `Transfer` can also arrive via deserialization,
-    /// bypassing the constructors.
+    /// Check that a new transfer's identity and shape are legal: ID unused,
+    /// accounts distinct, amount non-zero, and the pending-link shape valid.
+    /// Re-checked at apply time because a transfer can also arrive via
+    /// deserialization, not only through the constructors.
     fn validate_new_transfer(&self, transfer: &Transfer) -> Result<(), LedgerError> {
         if self.transfers.contains_key(&transfer.id()) {
             return Err(LedgerError::TransferAlreadyExists(transfer.id()));
@@ -372,10 +644,10 @@ impl Ledger {
         Ok(())
     }
 
-    /// Check a posted transfer's hold link: if it claims a `pending_id`, the
-    /// hold must exist and be [`TransferState::Posted`] already. Mirrors the
-    /// structural check so a forged or deserialized transfer is rejected the
-    /// moment it is applied rather than at a later `verify_invariants`.
+    /// Check a posted transfer's hold link: if it names a `pending_id`, the hold
+    /// must exist and already be [`TransferState::Posted`]. Rejected at apply
+    /// time so a forged or deserialized transfer cannot slip past
+    /// [`Self::verify_structure`].
     fn validate_pending_link(&self, transfer: &Transfer) -> Result<(), LedgerError> {
         let Some(pending_id) = transfer.pending_id() else {
             return Ok(());
@@ -423,8 +695,6 @@ impl Ledger {
             return Err(LedgerError::TransferAlreadyExists(post_transfer_id));
         }
 
-        // Extract primitives first so the pending entry is not borrowed while we
-        // hold mutable access to the accounts map.
         let (debit_account_id, credit_account_id, pending_amount) = {
             let pending_transfer = self
                 .transfers
@@ -458,9 +728,6 @@ impl Ledger {
             )
         };
 
-        // Compute phase: every fallible operation runs before the first write, so
-        // a failure can never leave a half-applied balance change. All lookups
-        // target accounts validated to exist when the hold was created.
         let new_debits_pending = {
             let debit_account = self
                 .accounts
@@ -498,7 +765,6 @@ impl Ledger {
             timestamp,
         )?;
 
-        // Write phase: pure assignments; nothing here can fail.
         let debit_acc = self
             .accounts
             .get_mut(&debit_account_id)
@@ -513,7 +779,6 @@ impl Ledger {
         credit_acc.balance.credits_pending = new_credits_pending.0;
         credit_acc.balance.credits_posted = new_credits_pending.1;
 
-        // Record the state transition only after all effects are committed.
         let pending_transfer = self
             .transfers
             .get_mut(&pending_id)
@@ -742,60 +1007,198 @@ impl Ledger {
         let mut ledger = Self::new(scale);
 
         for event in events {
-            match event {
-                LedgerEvent::AccountCreated {
-                    id,
-                    account_type,
-                    flags,
-                    scale,
-                    timestamp,
-                } => {
-                    ledger.create_account(*id, *account_type, *flags, *scale, *timestamp)?;
-                }
-                LedgerEvent::AccountClosed { id, timestamp } => {
-                    ledger.close_account(*id, *timestamp)?;
-                }
-                LedgerEvent::TransferPosted { transfer } => {
-                    ledger.create_transfer(transfer.clone())?;
-                }
-                LedgerEvent::TransferPendingCreated { transfer } => {
-                    ledger.create_pending(transfer.clone())?;
-                }
-                LedgerEvent::TransferPendingPosted {
-                    pending_id,
-                    post_transfer_id,
-                    amount,
-                    timestamp,
-                } => {
-                    ledger.post_pending(*pending_id, *post_transfer_id, *amount, *timestamp)?;
-                }
-                LedgerEvent::TransferPendingVoided {
-                    pending_id,
-                    amount,
-                    timestamp,
-                } => {
-                    // The voided amount is a duplicate of the pending
-                    // reservation; a mismatch means a corrupted journal that
-                    // must fail loudly instead of replaying to wrong state.
-                    let pending = ledger
-                        .transfers
-                        .get(pending_id)
-                        .map(|transfer| transfer.amount())
-                        .ok_or(LedgerError::TransferNotFound(*pending_id))?;
-                    if pending != *amount {
-                        return Err(LedgerError::JournalVoidedAmountMismatch {
-                            pending_id: *pending_id,
-                            pending,
-                            amount: *amount,
-                        });
-                    }
-                    ledger.void_pending(*pending_id, *timestamp)?;
-                }
-            }
+            ledger.apply_event(event)?;
         }
 
         Ok(ledger)
     }
+}
+
+/// A pre-image of one side effect, recorded before its event applies so the
+/// application can be reverted exactly.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum UndoOp {
+    /// The event created an account; rollback removes it.
+    RemoveAccount {
+        /// Account inserted by the event.
+        id: AccountId,
+    },
+    /// The event changed an account's flags; rollback restores them.
+    AccountFlagsBefore {
+        /// Account whose flags changed.
+        id: AccountId,
+        /// Flags captured before the event.
+        flags: AccountFlags,
+    },
+    /// The event changed an account's balances; rollback restores them.
+    AccountBalanceBefore {
+        /// Account whose balances changed.
+        id: AccountId,
+        /// Balances captured before the event.
+        balance: Balance,
+    },
+    /// The event inserted a transfer; rollback removes it.
+    RemoveTransfer {
+        /// Transfer inserted by the event.
+        id: TransferId,
+    },
+    /// The event transitioned a transfer; rollback restores its prior state.
+    TransferStateBefore {
+        /// Transfer whose state changed.
+        id: TransferId,
+        /// State captured before the event.
+        state: TransferState,
+    },
+}
+
+/// Capture the pre-images of every side effect `event` will make.
+///
+/// The captured ops are only kept if the event applies successfully, so an
+/// event that fails its validation (and therefore changes nothing) never has
+/// its ops rolled back.
+fn pre_images(
+    event: &LedgerEvent,
+    ledger: &Ledger,
+    undo: &mut Vec<UndoOp>,
+) -> Result<(), LedgerError> {
+    match event {
+        LedgerEvent::AccountCreated { id, .. } => {
+            undo.push(UndoOp::RemoveAccount { id: *id });
+        }
+        LedgerEvent::AccountClosed { id, .. } => {
+            let account = ledger
+                .accounts
+                .get(id)
+                .ok_or(LedgerError::AccountNotFound(*id))?;
+            undo.push(UndoOp::AccountFlagsBefore {
+                id: *id,
+                flags: account.flags,
+            });
+        }
+        LedgerEvent::TransferPosted { transfer } => {
+            push_balance_before(ledger, transfer.debit_account_id(), undo)?;
+            push_balance_before(ledger, transfer.credit_account_id(), undo)?;
+            undo.push(UndoOp::RemoveTransfer { id: transfer.id() });
+        }
+        LedgerEvent::TransferPendingCreated { transfer } => {
+            push_balance_before(ledger, transfer.debit_account_id(), undo)?;
+            push_balance_before(ledger, transfer.credit_account_id(), undo)?;
+            undo.push(UndoOp::RemoveTransfer { id: transfer.id() });
+        }
+        LedgerEvent::TransferPendingPosted {
+            pending_id,
+            post_transfer_id,
+            ..
+        } => {
+            let pending = ledger
+                .transfers
+                .get(pending_id)
+                .ok_or(LedgerError::TransferNotFound(*pending_id))?;
+            push_balance_before(ledger, pending.debit_account_id(), undo)?;
+            push_balance_before(ledger, pending.credit_account_id(), undo)?;
+            undo.push(UndoOp::TransferStateBefore {
+                id: *pending_id,
+                state: pending.state(),
+            });
+            undo.push(UndoOp::RemoveTransfer {
+                id: *post_transfer_id,
+            });
+        }
+        LedgerEvent::TransferPendingVoided { pending_id, .. } => {
+            let pending = ledger
+                .transfers
+                .get(pending_id)
+                .ok_or(LedgerError::TransferNotFound(*pending_id))?;
+            push_balance_before(ledger, pending.debit_account_id(), undo)?;
+            push_balance_before(ledger, pending.credit_account_id(), undo)?;
+            undo.push(UndoOp::TransferStateBefore {
+                id: *pending_id,
+                state: pending.state(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Capture the pre-images of every side effect `op` will make during speculative
+/// batch execution.
+fn op_pre_images(op: &BatchOp, ledger: &Ledger, undo: &mut Vec<UndoOp>) -> Result<(), LedgerError> {
+    match op {
+        BatchOp::CreateAccount { id, .. } => {
+            if ledger.accounts.contains_key(id) {
+                return Err(LedgerError::AccountAlreadyExists(*id));
+            }
+            undo.push(UndoOp::RemoveAccount { id: *id });
+            Ok(())
+        }
+        BatchOp::CloseAccount { id, .. } => {
+            let account = ledger
+                .accounts
+                .get(id)
+                .ok_or(LedgerError::AccountNotFound(*id))?;
+            undo.push(UndoOp::AccountFlagsBefore {
+                id: *id,
+                flags: account.flags,
+            });
+            Ok(())
+        }
+        BatchOp::Transfer(transfer) | BatchOp::Pending(transfer) => {
+            push_balance_before(ledger, transfer.debit_account_id(), undo)?;
+            push_balance_before(ledger, transfer.credit_account_id(), undo)?;
+            undo.push(UndoOp::RemoveTransfer { id: transfer.id() });
+            Ok(())
+        }
+        BatchOp::PostPending {
+            pending_id,
+            post_transfer_id,
+            ..
+        } => {
+            let pending = ledger
+                .transfers
+                .get(pending_id)
+                .ok_or(LedgerError::TransferNotFound(*pending_id))?;
+            push_balance_before(ledger, pending.debit_account_id(), undo)?;
+            push_balance_before(ledger, pending.credit_account_id(), undo)?;
+            undo.push(UndoOp::TransferStateBefore {
+                id: *pending_id,
+                state: pending.state(),
+            });
+            undo.push(UndoOp::RemoveTransfer {
+                id: *post_transfer_id,
+            });
+            Ok(())
+        }
+        BatchOp::VoidPending { pending_id, .. } => {
+            let pending = ledger
+                .transfers
+                .get(pending_id)
+                .ok_or(LedgerError::TransferNotFound(*pending_id))?;
+            push_balance_before(ledger, pending.debit_account_id(), undo)?;
+            push_balance_before(ledger, pending.credit_account_id(), undo)?;
+            undo.push(UndoOp::TransferStateBefore {
+                id: *pending_id,
+                state: pending.state(),
+            });
+            Ok(())
+        }
+    }
+}
+
+/// Push the account's balances as an [`UndoOp::AccountBalanceBefore`] pre-image.
+fn push_balance_before(
+    ledger: &Ledger,
+    id: AccountId,
+    undo: &mut Vec<UndoOp>,
+) -> Result<(), LedgerError> {
+    let account = ledger
+        .accounts
+        .get(&id)
+        .ok_or(LedgerError::AccountNotFound(id))?;
+    undo.push(UndoOp::AccountBalanceBefore {
+        id,
+        balance: account.balance,
+    });
+    Ok(())
 }
 
 #[cfg(test)]
@@ -879,5 +1282,329 @@ mod tests {
                 actual: TransferState::Pending,
             },
         );
+    }
+
+    #[test]
+    fn commit_events_failure_rolls_back_the_whole_batch() {
+        let mut ledger = seeded();
+        let before = ledger.clone();
+        let events = vec![
+            LedgerEvent::TransferPosted {
+                transfer: Transfer::new_immediate(
+                    TransferId::new(7),
+                    AccountId::new(1),
+                    AccountId::new(2),
+                    Amount::new(10),
+                    1,
+                )
+                .unwrap(),
+            },
+            LedgerEvent::TransferPosted {
+                transfer: Transfer::new_immediate(
+                    TransferId::new(7),
+                    AccountId::new(1),
+                    AccountId::new(2),
+                    Amount::new(10),
+                    1,
+                )
+                .unwrap(),
+            },
+        ];
+
+        assert!(ledger.commit_events(&events).is_err());
+        assert_eq!(
+            ledger, before,
+            "failed commit must leave the ledger untouched"
+        );
+    }
+
+    #[test]
+    fn prepare_batch_validates_without_persisting_state() {
+        let mut ledger = seeded();
+        let before = ledger.clone();
+        let events = ledger
+            .prepare_batch(&[BatchOp::Transfer(
+                Transfer::new_immediate(
+                    TransferId::new(7),
+                    AccountId::new(1),
+                    AccountId::new(2),
+                    Amount::new(10),
+                    1,
+                )
+                .unwrap(),
+            )])
+            .unwrap();
+
+        assert!(matches!(&events[..], [LedgerEvent::TransferPosted { .. }]));
+        assert_eq!(
+            ledger, before,
+            "prepare must roll back its speculative apply"
+        );
+
+        let mut applied = before.clone();
+        applied.commit_events(&events).unwrap();
+        assert_eq!(ledger, before);
+        assert_eq!(
+            applied.journal(),
+            &before
+                .journal()
+                .iter()
+                .cloned()
+                .chain(events)
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    #[test]
+    fn failing_prepare_batch_leaves_the_ledger_untouched() {
+        let mut ledger = seeded();
+        let before = ledger.clone();
+        let first = BatchOp::Transfer(
+            Transfer::new_immediate(
+                TransferId::new(7),
+                AccountId::new(1),
+                AccountId::new(2),
+                Amount::new(10),
+                1,
+            )
+            .unwrap(),
+        );
+        let duplicate = BatchOp::Transfer(
+            Transfer::new_immediate(
+                TransferId::new(7),
+                AccountId::new(1),
+                AccountId::new(2),
+                Amount::new(10),
+                1,
+            )
+            .unwrap(),
+        );
+
+        assert!(ledger.prepare_batch(&[first, duplicate]).is_err());
+        assert_eq!(
+            ledger, before,
+            "failed prepare must leave the ledger untouched"
+        );
+    }
+
+    #[test]
+    fn prepare_batch_supports_mixed_operations_and_atomic_rollback() {
+        let mut ledger = Ledger::new(Scale::usdc());
+        let before = ledger.clone();
+
+        let ops = vec![
+            BatchOp::CreateAccount {
+                id: AccountId::new(10),
+                account_type: AccountType::Asset,
+                flags: AccountFlags::bank_asset(),
+                scale: Scale::usdc(),
+                timestamp: 1,
+            },
+            BatchOp::CreateAccount {
+                id: AccountId::new(20),
+                account_type: AccountType::Liability,
+                flags: AccountFlags::customer(),
+                scale: Scale::usdc(),
+                timestamp: 1,
+            },
+            BatchOp::Pending(
+                Transfer::new_pending(
+                    TransferId::new(100),
+                    AccountId::new(10),
+                    AccountId::new(20),
+                    Amount::new(500),
+                    2,
+                )
+                .unwrap(),
+            ),
+            BatchOp::PostPending {
+                pending_id: TransferId::new(100),
+                post_transfer_id: TransferId::new(101),
+                amount: Amount::new(500),
+                timestamp: 3,
+            },
+        ];
+
+        let events = ledger.prepare_batch(&ops).expect("mixed batch prepare");
+        assert_eq!(events.len(), 4);
+        assert_eq!(
+            ledger, before,
+            "speculative prepare must not alter ledger state"
+        );
+
+        ledger.commit_events(&events).expect("commit mixed batch");
+        assert_eq!(ledger.journal().len(), 4);
+        assert_eq!(
+            ledger
+                .get_account(AccountId::new(10))
+                .unwrap()
+                .balance
+                .debits_posted,
+            Amount::new(500)
+        );
+        assert_eq!(
+            ledger
+                .get_account(AccountId::new(20))
+                .unwrap()
+                .balance
+                .credits_posted,
+            Amount::new(500)
+        );
+    }
+
+    #[test]
+    fn every_event_kind_rolls_back_atomically_when_a_later_event_fails() {
+        struct Case {
+            name: &'static str,
+            make: fn() -> (Ledger, LedgerEvent),
+        }
+
+        let failing_event = || LedgerEvent::AccountCreated {
+            id: AccountId::new(1),
+            account_type: AccountType::Asset,
+            flags: AccountFlags::bank_asset(),
+            scale: Scale::usdc(),
+            timestamp: 10_000_000,
+        };
+
+        let cases: &[Case] = &[
+            Case {
+                name: "AccountCreated",
+                make: || {
+                    let before = seeded();
+                    let event = LedgerEvent::AccountCreated {
+                        id: AccountId::new(3),
+                        account_type: AccountType::Liability,
+                        flags: AccountFlags::customer(),
+                        scale: Scale::usdc(),
+                        timestamp: 1,
+                    };
+                    (before, event)
+                },
+            },
+            Case {
+                name: "AccountClosed",
+                make: || {
+                    let mut before = seeded();
+                    before
+                        .create_account(
+                            AccountId::new(3),
+                            AccountType::Liability,
+                            AccountFlags::customer(),
+                            Scale::usdc(),
+                            1,
+                        )
+                        .unwrap();
+                    let event = LedgerEvent::AccountClosed {
+                        id: AccountId::new(3),
+                        timestamp: 2,
+                    };
+                    (before, event)
+                },
+            },
+            Case {
+                name: "TransferPosted",
+                make: || {
+                    let before = seeded();
+                    let event = LedgerEvent::TransferPosted {
+                        transfer: Transfer::new_immediate(
+                            TransferId::new(7),
+                            AccountId::new(1),
+                            AccountId::new(2),
+                            Amount::new(10),
+                            1,
+                        )
+                        .unwrap(),
+                    };
+                    (before, event)
+                },
+            },
+            Case {
+                name: "TransferPendingCreated",
+                make: || {
+                    let before = seeded();
+                    let event = LedgerEvent::TransferPendingCreated {
+                        transfer: Transfer::new_pending(
+                            TransferId::new(7),
+                            AccountId::new(1),
+                            AccountId::new(2),
+                            Amount::new(10),
+                            1,
+                        )
+                        .unwrap(),
+                    };
+                    (before, event)
+                },
+            },
+            Case {
+                name: "TransferPendingPosted",
+                make: || {
+                    let mut before = seeded();
+                    before
+                        .create_pending(
+                            Transfer::new_pending(
+                                TransferId::new(3),
+                                AccountId::new(1),
+                                AccountId::new(2),
+                                Amount::new(100),
+                                1,
+                            )
+                            .unwrap(),
+                        )
+                        .unwrap();
+                    let event = LedgerEvent::TransferPendingPosted {
+                        pending_id: TransferId::new(3),
+                        post_transfer_id: TransferId::new(8),
+                        amount: Amount::new(100),
+                        timestamp: 2,
+                    };
+                    (before, event)
+                },
+            },
+            Case {
+                name: "TransferPendingVoided",
+                make: || {
+                    let mut before = seeded();
+                    before
+                        .create_pending(
+                            Transfer::new_pending(
+                                TransferId::new(3),
+                                AccountId::new(1),
+                                AccountId::new(2),
+                                Amount::new(100),
+                                1,
+                            )
+                            .unwrap(),
+                        )
+                        .unwrap();
+                    let event = LedgerEvent::TransferPendingVoided {
+                        pending_id: TransferId::new(3),
+                        amount: Amount::new(100),
+                        timestamp: 2,
+                    };
+                    (before, event)
+                },
+            },
+        ];
+
+        for case in cases {
+            let (before, kind_event) = (case.make)();
+
+            let mut alone = before.clone();
+            alone
+                .commit_events(std::slice::from_ref(&kind_event))
+                .unwrap_or_else(|err| panic!("{}: kind event must apply: {err}", case.name));
+
+            let mut attempt = before.clone();
+            let pair = [kind_event, failing_event()];
+            let err = attempt
+                .commit_events(&pair)
+                .expect_err(&format!("{}: second event must fail", case.name));
+            assert_eq!(
+                attempt, before,
+                "{}: failed batch ({err}) must roll back the kind event",
+                case.name
+            );
+        }
     }
 }

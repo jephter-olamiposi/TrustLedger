@@ -1,25 +1,24 @@
-//! Zero-dependency hot-path benchmark for the ledger's core write operations.
+//! Criterion-driven hot-path benchmarks for the ledger's core write operations.
 //!
-//! Measures representative workloads against a pre-seeded ledger:
-//! - immediate `create_transfer`
-//! - two-phase `create_pending` + `post_pending` round-trip
-//! - sliced `apply_batch` application
-//! - full `replay` of a journal
-//!
-//! Run with `cargo bench --package ledger-core`. Numbers are printed as
-//! transfers/second to back the throughput claims in the ADR.
+//! Statistical medians replace the one-shot harness (see
+//! `docs/BENCHMARKS.md`). `scripts/bench_gate.py` runs these, records them
+//! against `docs/benchmarks/baseline.json`, and fails the gate if a median
+//! exceeds the committed bound (ADR-0008).
+
+#![allow(missing_docs)]
 
 use std::hint::black_box;
-use std::time::Instant;
 
+use criterion::{criterion_group, criterion_main, Criterion};
 use ledger_core::account::{AccountFlags, AccountType};
 use ledger_core::amount::{Amount, Scale};
 use ledger_core::id::{AccountId, TransferId};
 use ledger_core::ledger::Ledger;
 use ledger_core::transfer::Transfer;
 
-const ITERATIONS: u64 = 1_000_000;
 const USDC_SCALE: Scale = Scale::usdc();
+const BATCH_SIZE: usize = 256;
+const REPLAY_EVENTS: u64 = 200_000;
 
 /// Seeds a ledger with two funded accounts (a vault and a customer) plus one
 /// pool account so transfers can circulate without exhausting balance.
@@ -52,105 +51,88 @@ fn seeded_ledger() -> Ledger {
     ledger
 }
 
-fn bench_immediate_transfer() {
+fn bench_create_transfer(c: &mut Criterion) {
     let mut ledger = seeded_ledger();
     let pool = AccountId::new(2);
     let customer = AccountId::new(3);
+    let mut next_id = 100u128;
 
-    let start = Instant::now();
-    for (next_id, i) in (100u128..).zip(0..ITERATIONS) {
-        let transfer =
-            Transfer::new_immediate(TransferId::new(next_id), pool, customer, Amount::new(1), i)
-                .expect("construct transfer");
-        ledger
-            .create_transfer(transfer)
-            .expect("apply immediate transfer");
-    }
-    let elapsed = start.elapsed();
-    let per_second = ITERATIONS as f64 / elapsed.as_secs_f64();
-    println!(
-        "create_transfer: {:>10.0} transfers/sec ({} ns/op)",
-        per_second,
-        elapsed.as_nanos() / ITERATIONS as u128
-    );
-    black_box(ledger);
+    c.bench_function("create_transfer", |b| {
+        b.iter(|| {
+            let transfer = Transfer::new_immediate(
+                TransferId::new(black_box(next_id)),
+                pool,
+                customer,
+                Amount::new(1),
+                0,
+            )
+            .expect("construct transfer");
+            next_id += 1;
+            ledger.create_transfer(transfer).expect("apply transfer");
+        })
+    });
 }
 
-fn bench_two_phase_round_trip() {
+fn bench_two_phase_round_trip(c: &mut Criterion) {
     let mut ledger = seeded_ledger();
     let pool = AccountId::new(2);
     let customer = AccountId::new(3);
     let mut next_id = 1000u128;
 
-    let start = Instant::now();
-    for _ in 0..ITERATIONS / 2 {
-        let pending =
-            Transfer::new_pending(TransferId::new(next_id), customer, pool, Amount::new(1), 0)
-                .expect("construct pending");
-        ledger.create_pending(pending).expect("apply pending hold");
-        ledger
-            .post_pending(
-                TransferId::new(next_id),
-                TransferId::new(next_id + 1),
+    c.bench_function("two_phase_round_trip", |b| {
+        b.iter(|| {
+            let pending = Transfer::new_pending(
+                TransferId::new(black_box(next_id)),
+                customer,
+                pool,
                 Amount::new(1),
                 0,
             )
-            .expect("capture pending hold");
-        next_id += 2;
-    }
-    let elapsed = start.elapsed();
-    let ops = ITERATIONS as f64;
-    let per_second = ops / elapsed.as_secs_f64();
-    println!(
-        "two-phase (pending+post): {:>10.0} round-trips/sec ({} ns/op)",
-        per_second,
-        elapsed.as_nanos() / ITERATIONS as u128
-    );
-    black_box(ledger);
+            .expect("construct pending");
+            ledger.create_pending(pending).expect("apply pending hold");
+            ledger
+                .post_pending(
+                    TransferId::new(next_id),
+                    TransferId::new(next_id + 1),
+                    Amount::new(1),
+                    0,
+                )
+                .expect("capture pending hold");
+            next_id += 2;
+        })
+    });
 }
 
-fn bench_apply_batch() {
-    const BATCH_SIZE: usize = 256;
-    const BATCH_ITERATIONS: u64 = 64;
-
+fn bench_apply_batch(c: &mut Criterion) {
     let mut ledger = seeded_ledger();
     let pool = AccountId::new(2);
     let customer = AccountId::new(3);
     let mut next_id = 100_000u128;
     let mut clock = 1_000_000u64;
 
-    let start = Instant::now();
-    let total = BATCH_SIZE as u128 * BATCH_ITERATIONS as u128;
-    for _ in 0..BATCH_ITERATIONS {
-        let batch: Vec<Transfer> = (0..BATCH_SIZE)
-            .map(|_| {
-                let transfer = Transfer::new_immediate(
-                    TransferId::new(next_id),
-                    pool,
-                    customer,
-                    Amount::new(1),
-                    clock,
-                )
-                .expect("construct batch transfer");
-                next_id += 1;
-                clock += 1;
-                transfer
-            })
-            .collect();
-        ledger.apply_batch(&batch).expect("apply batch");
-    }
-    let elapsed = start.elapsed();
-    println!(
-        "apply_batch ({BATCH_SIZE}/batch): {:>10.0} transfers/sec ({} ns/op)",
-        total as f64 / elapsed.as_secs_f64(),
-        elapsed.as_nanos() / total
-    );
-    black_box(ledger);
+    c.bench_function("apply_batch", |b| {
+        b.iter(|| {
+            let batch: Vec<Transfer> = (0..BATCH_SIZE)
+                .map(|_| {
+                    let transfer = Transfer::new_immediate(
+                        TransferId::new(black_box(next_id)),
+                        pool,
+                        customer,
+                        Amount::new(1),
+                        clock,
+                    )
+                    .expect("construct batch transfer");
+                    next_id += 1;
+                    clock += 1;
+                    transfer
+                })
+                .collect();
+            ledger.apply_batch(&batch).expect("apply batch")
+        })
+    });
 }
 
-fn bench_replay() {
-    const REPLAY_EVENTS: u64 = 200_000;
-
+fn bench_replay(c: &mut Criterion) {
     let mut ledger = seeded_ledger();
     let pool = AccountId::new(2);
     let customer = AccountId::new(3);
@@ -170,25 +152,21 @@ fn bench_replay() {
     }
 
     let journal = ledger.journal().to_vec();
-    let start = Instant::now();
-    let replayed = Ledger::replay(USDC_SCALE, &journal).expect("replay");
-    let elapsed = start.elapsed();
-    replayed.verify_invariants().expect("replayed invariants");
-    println!(
-        "replay: {:>10.0} events/sec ({} ns/op)",
-        journal.len() as f64 / elapsed.as_secs_f64(),
-        elapsed.as_nanos() / journal.len() as u128
-    );
-    black_box(replayed);
+    c.bench_function("replay", |b| {
+        b.iter(|| {
+            let replayed = Ledger::replay(USDC_SCALE, &journal).expect("replay");
+            replayed.verify_invariants().expect("replayed invariants");
+            black_box(replayed)
+        })
+    });
 }
 
-fn main() {
-    println!(
-        "== ledger-core hot-path throughput [{} iterations each] ==",
-        ITERATIONS
-    );
-    bench_immediate_transfer();
-    bench_two_phase_round_trip();
-    bench_apply_batch();
-    bench_replay();
-}
+criterion_group!(
+    name = benches;
+    config = Criterion::default();
+    targets = bench_create_transfer,
+        bench_two_phase_round_trip,
+        bench_apply_batch,
+        bench_replay,
+);
+criterion_main!(benches);
