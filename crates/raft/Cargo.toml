@@ -1,0 +1,22 @@
+[package]
+name = "raft"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Distributed consensus layer for TrustLedger powered by OpenRaft"
+
+[dependencies]
+ledger-core = { path = "../ledger-core", version = "0.1" }
+wal = { path = "../wal", version = "0.1" }
+openraft = { version = "0.9.25", default-features = false, features = ["storage-v2", "serde"] }
+serde = { workspace = true }
+postcard = { workspace = true }
+thiserror = { workspace = true }
+tokio = { version = "1.43", features = ["sync", "rt-multi-thread", "time", "macros"] }
+tracing = "0.1"
+async-trait = "0.1"
+
+[dev-dependencies]
+tempfile = { workspace = true }

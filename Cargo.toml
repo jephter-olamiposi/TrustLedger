@@ -4,6 +4,7 @@ members = [
     "crates/ledger-core",
     "crates/wal",
     "crates/ingest",
+    "crates/raft",
 ]
 
 [workspace.package]

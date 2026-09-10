@@ -44,7 +44,7 @@ owns the disk. At a high level it provides:
 * **`crates/ingest`** — high-performance tonic/gRPC network ingress with protobuf schemas,
   bounded non-blocking queues, backpressure load-shedding (`RESOURCE_EXHAUSTED` under overload),
   a single-writer micro-batch accumulator, and atomic single-fsync group commits. *(v0.1 shipped)*
-* **`crates/raft`** — three-node consensus; log replication and failover without split-brain. *(planned)*
+* **`crates/raft`** — three-node consensus cluster powered by OpenRaft; decoupled storage (`storage-v2`), simulated in-memory network router for deterministic chaos testing, automated failover in < 0.5s, and split-brain prevention under network partitions (ADR-0009). *(v0.1 shipped)*
 * **`crates/merkle` + `crates/solana-settle`** — Merkle Mountain Range roots
   committed to a Solana PDA; USDC legs. *(planned)*
 * **`apps/demo`** — reference client, e2e suite, and the "Verify transfer"
@@ -196,9 +196,12 @@ from disk I/O:
 * **wal** (`crates/wal`: 34 tests) — every-byte-boundary crash sweeps over
   byte-corrupted and partially-written logs, proving recovery lands exactly on
   the last verified frame ([runbook][runbook]).
-* **Network Ingress & Backpressure** (`crates/ingest`: 10 tests) — end-to-end gRPC integration
+* **Network Ingress & Backpressure** (`crates/ingest`: 8 tests) — end-to-end gRPC integration
   suite verifying the full RPC lifecycle, two-phase holds, scale rejections, atomic batch rollbacks,
   and high-concurrency burst load-shedding (`RESOURCE_EXHAUSTED`).
+* **Distributed Consensus & Chaos** (`crates/raft`: 3 tests) — 3-node cluster bootstrap and
+  quorum replication, Jepsen-style network partition simulations (minority isolation, majority progression,
+  partition healing, log truncation, zero split-brain), and rapid leader failover (< 0.5s failover SLO).
 
 ## Benchmarks
 

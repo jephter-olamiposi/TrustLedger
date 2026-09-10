@@ -1,0 +1,65 @@
+version: "3.8"
+
+services:
+  raft-node-1:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.node
+    container_name: trustledger-raft-1
+    environment:
+      - NODE_ID=1
+      - CLUSTER_PEERS=1=raft-node-1:21001,2=raft-node-2:21002,3=raft-node-3:21003
+      - RAFT_PORT=21001
+      - INGEST_PORT=50051
+    ports:
+      - "50051:50051"
+      - "21001:21001"
+    volumes:
+      - raft-data-1:/data
+    networks:
+      - trustledger-net
+
+  raft-node-2:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.node
+    container_name: trustledger-raft-2
+    environment:
+      - NODE_ID=2
+      - CLUSTER_PEERS=1=raft-node-1:21001,2=raft-node-2:21002,3=raft-node-3:21003
+      - RAFT_PORT=21002
+      - INGEST_PORT=50052
+    ports:
+      - "50052:50052"
+      - "21002:21002"
+    volumes:
+      - raft-data-2:/data
+    networks:
+      - trustledger-net
+
+  raft-node-3:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.node
+    container_name: trustledger-raft-3
+    environment:
+      - NODE_ID=3
+      - CLUSTER_PEERS=1=raft-node-1:21001,2=raft-node-2:21002,3=raft-node-3:21003
+      - RAFT_PORT=21003
+      - INGEST_PORT=50053
+    ports:
+      - "50053:50053"
+      - "21003:21003"
+    volumes:
+      - raft-data-3:/data
+    networks:
+      - trustledger-net
+
+networks:
+  trustledger-net:
+    driver: bridge
+
+volumes:
+  raft-data-1:
+  raft-data-2:
+  raft-data-3:
