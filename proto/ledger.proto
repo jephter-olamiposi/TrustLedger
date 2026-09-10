@@ -1,0 +1,227 @@
+syntax = "proto3";
+
+package ledger;
+
+// Monetary amount with integer units and decimal scale.
+message Amount {
+  // Unsigned base units (lower 64 bits).
+  uint64 units = 1;
+  // Decimal scale factor (e.g. 2 for USD, 6 for USDC, 8 for BTC, 18 for ETH).
+  uint32 scale = 2;
+  // High 64 bits of 128-bit base units (optional, defaults to 0).
+  uint64 units_high = 3;
+}
+
+// Account type in double-entry bookkeeping.
+enum AccountType {
+  ACCOUNT_TYPE_UNSPECIFIED = 0;
+  // Assets: things owned (cash, receivables). Normal balance is debit.
+  ACCOUNT_TYPE_ASSET = 1;
+  // Liabilities: things owed (customer deposits). Normal balance is credit.
+  ACCOUNT_TYPE_LIABILITY = 2;
+  // Equity: capital and retained earnings. Normal balance is credit.
+  ACCOUNT_TYPE_EQUITY = 3;
+  // Revenue: income earned (fees). Normal balance is credit.
+  ACCOUNT_TYPE_REVENUE = 4;
+  // Expenses: costs incurred (network fees). Normal balance is debit.
+  ACCOUNT_TYPE_EXPENSE = 5;
+}
+
+// Rules that control what an account can do.
+message AccountFlags {
+  // Disallow negative balance (no overdrafts).
+  bool debits_must_not_exceed_credits = 1;
+  // Disallow asset reserves from dropping below zero.
+  bool credits_must_not_exceed_debits = 2;
+  // If true, reject all new transfers.
+  bool is_closed = 3;
+}
+
+// Current balances for an account.
+message Balance {
+  // Total settled debits.
+  Amount debits_posted = 1;
+  // Total settled credits.
+  Amount credits_posted = 2;
+  // Debits currently held in pending transfers.
+  Amount debits_pending = 3;
+  // Credits currently held in pending transfers.
+  Amount credits_pending = 4;
+}
+
+// A ledger account.
+message Account {
+  // Unique account ID.
+  uint64 id = 1;
+  // Account type (asset, liability, equity, revenue, expense).
+  AccountType account_type = 2;
+  // Balance rules and constraints.
+  AccountFlags flags = 3;
+  // Currency decimal scale.
+  uint32 scale = 4;
+  // Current balances.
+  Balance balance = 5;
+}
+
+// State of a transfer.
+enum TransferState {
+  TRANSFER_STATE_UNSPECIFIED = 0;
+  // Funds are held/reserved pending capture or cancellation.
+  TRANSFER_STATE_PENDING = 1;
+  // Settle funds between accounts.
+  TRANSFER_STATE_POSTED = 2;
+  // Cancelled pending transfer; held funds released.
+  TRANSFER_STATE_VOIDED = 3;
+}
+
+// A transfer between two accounts.
+message Transfer {
+  // Unique transfer ID.
+  uint64 id = 1;
+  // Account being debited.
+  uint64 debit_account_id = 2;
+  // Account being credited.
+  uint64 credit_account_id = 3;
+  // Monetary amount.
+  Amount amount = 4;
+  // Current lifecycle state.
+  TransferState state = 5;
+  // Original pending transfer ID if this is a settlement of a hold.
+  optional uint64 pending_id = 6;
+  // Sequence/wall-clock timestamp.
+  uint64 timestamp = 7;
+}
+
+// Request to create a new ledger account.
+message CreateAccountRequest {
+  uint64 id = 1;
+  AccountType account_type = 2;
+  AccountFlags flags = 3;
+  uint32 scale = 4;
+  uint64 timestamp = 5;
+}
+
+// Response containing the created account.
+message CreateAccountResponse {
+  Account account = 1;
+}
+
+// Request to create an immediate settlement transfer.
+message CreateTransferRequest {
+  uint64 id = 1;
+  uint64 debit_account_id = 2;
+  uint64 credit_account_id = 3;
+  Amount amount = 4;
+  uint64 timestamp = 5;
+}
+
+// Response containing the created transfer.
+message CreateTransferResponse {
+  Transfer transfer = 1;
+}
+
+// Request to create a pending transfer (hold).
+message CreatePendingRequest {
+  uint64 id = 1;
+  uint64 debit_account_id = 2;
+  uint64 credit_account_id = 3;
+  Amount amount = 4;
+  uint64 timestamp = 5;
+}
+
+// Response containing the created pending transfer.
+message CreatePendingResponse {
+  Transfer transfer = 1;
+}
+
+// Request to post (settle) a pending transfer.
+message PostPendingRequest {
+  uint64 pending_id = 1;
+  uint64 post_transfer_id = 2;
+  Amount amount = 3;
+  uint64 timestamp = 4;
+}
+
+// Response containing the posted settlement transfer.
+message PostPendingResponse {
+  Transfer transfer = 1;
+}
+
+// Request to void (cancel) a pending transfer.
+message VoidPendingRequest {
+  uint64 pending_id = 1;
+  uint64 timestamp = 2;
+}
+
+// Response containing the voided transfer.
+message VoidPendingResponse {
+  Transfer transfer = 1;
+}
+
+// Request to look up an account by ID.
+message GetAccountRequest {
+  uint64 id = 1;
+}
+
+// Response containing the requested account.
+message GetAccountResponse {
+  Account account = 1;
+}
+
+// Request to look up a transfer by ID.
+message GetTransferRequest {
+  uint64 id = 1;
+}
+
+// Response containing the requested transfer.
+message GetTransferResponse {
+  Transfer transfer = 1;
+}
+
+// An individual operation within a transactional batch.
+message BatchOperation {
+  oneof operation {
+    CreateAccountRequest create_account = 1;
+    CreateTransferRequest create_transfer = 2;
+    CreatePendingRequest create_pending = 3;
+    PostPendingRequest post_pending = 4;
+    VoidPendingRequest void_pending = 5;
+  }
+}
+
+// Request to apply an atomic batch of operations.
+message ApplyBatchRequest {
+  repeated BatchOperation operations = 1;
+}
+
+// Response summarizing the batch execution result.
+message ApplyBatchResponse {
+  uint32 applied_count = 1;
+}
+
+// Double-entry settlement ledger service.
+service LedgerService {
+  // Create a new account with the given constraints and currency scale.
+  rpc CreateAccount(CreateAccountRequest) returns (CreateAccountResponse);
+
+  // Execute an immediate settlement transfer between two accounts.
+  rpc CreateTransfer(CreateTransferRequest) returns (CreateTransferResponse);
+
+  // Place a pending hold on funds between two accounts.
+  rpc CreatePending(CreatePendingRequest) returns (CreatePendingResponse);
+
+  // Settle (post) a previously created pending hold.
+  rpc PostPending(PostPendingRequest) returns (PostPendingResponse);
+
+  // Void (cancel) a previously created pending hold, releasing held funds.
+  rpc VoidPending(VoidPendingRequest) returns (VoidPendingResponse);
+
+  // Retrieve an account and its current balances.
+  rpc GetAccount(GetAccountRequest) returns (GetAccountResponse);
+
+  // Retrieve a transfer and its state.
+  rpc GetTransfer(GetTransferRequest) returns (GetTransferResponse);
+
+  // Apply a batch of operations atomically in a single transaction.
+  rpc ApplyBatch(ApplyBatchRequest) returns (ApplyBatchResponse);
+}

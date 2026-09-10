@@ -205,6 +205,24 @@ pub fn encode_into(
     encode_frame_into(MAGIC, VERSION, seq, payload, max_payload_len, dest)
 }
 
+/// Append one encoded record frame to `dest`, reusing and growing its capacity as needed.
+///
+/// Unlike [`encode_into`], this does not clear `dest` before encoding, allowing
+/// callers to assemble multiple frames into a contiguous buffer for atomic
+/// batched writing.
+///
+/// # Errors
+///
+/// Returns [`WalError::PayloadTooLarge`] when `payload.len()` exceeds `max_payload_len`.
+pub fn encode_append(
+    seq: u64,
+    payload: &[u8],
+    max_payload_len: usize,
+    dest: &mut Vec<u8>,
+) -> Result<(), WalError> {
+    encode_frame_append(MAGIC, VERSION, seq, payload, max_payload_len, dest)
+}
+
 /// Encode one record frame. Returns [`WalError::PayloadTooLarge`] if the
 /// payload exceeds `max_payload_len`.
 ///
@@ -232,8 +250,8 @@ pub(crate) fn encode_frame(
     Ok(frame)
 }
 
-/// Encode a frame into `dest` for consumers that share the wal layout but need their own magic.
-pub(crate) fn encode_frame_into(
+/// Append a frame into `dest` for consumers that share the wal layout but need their own magic.
+pub(crate) fn encode_frame_append(
     magic: u32,
     version: u8,
     seq: u64,
@@ -248,23 +266,37 @@ pub(crate) fn encode_frame_into(
         });
     }
 
+    let start = dest.len();
     let total_len = frame_len(payload.len());
-    dest.clear();
-    dest.resize(total_len, 0);
+    dest.resize(start + total_len, 0);
 
-    dest[0..4].copy_from_slice(&magic.to_le_bytes());
-    dest[4] = version;
-    dest[5] = 0;
-    dest[SEQ_OFFSET..SEQ_OFFSET + 8].copy_from_slice(&seq.to_le_bytes());
-    dest[LEN_OFFSET..LEN_OFFSET + 4].copy_from_slice(&(payload.len() as u32).to_le_bytes());
+    dest[start..start + 4].copy_from_slice(&magic.to_le_bytes());
+    dest[start + 4] = version;
+    dest[start + 5] = 0;
+    dest[start + SEQ_OFFSET..start + SEQ_OFFSET + 8].copy_from_slice(&seq.to_le_bytes());
+    dest[start + LEN_OFFSET..start + LEN_OFFSET + 4]
+        .copy_from_slice(&(payload.len() as u32).to_le_bytes());
 
-    let payload_start = HEADER_LEN;
+    let payload_start = start + HEADER_LEN;
     dest[payload_start..payload_start + payload.len()].copy_from_slice(payload);
 
-    let checksum = crc32c::crc32c(&dest[..total_len - TRAILER_LEN]);
-    let crc_offset = total_len - TRAILER_LEN;
-    dest[crc_offset..].copy_from_slice(&checksum.to_le_bytes());
+    let checksum = crc32c::crc32c(&dest[start..start + total_len - TRAILER_LEN]);
+    let crc_offset = start + total_len - TRAILER_LEN;
+    dest[crc_offset..start + total_len].copy_from_slice(&checksum.to_le_bytes());
     Ok(())
+}
+
+/// Encode a frame into `dest` for consumers that share the wal layout but need their own magic.
+pub(crate) fn encode_frame_into(
+    magic: u32,
+    version: u8,
+    seq: u64,
+    payload: &[u8],
+    max_payload_len: usize,
+    dest: &mut Vec<u8>,
+) -> Result<(), WalError> {
+    dest.clear();
+    encode_frame_append(magic, version, seq, payload, max_payload_len, dest)
 }
 
 /// Validate a complete frame (header + payload + trailer) and return its

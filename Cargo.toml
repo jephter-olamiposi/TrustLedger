@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/ledger-core",
     "crates/wal",
+    "crates/ingest",
 ]
 
 [workspace.package]

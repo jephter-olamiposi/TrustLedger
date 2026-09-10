@@ -158,31 +158,133 @@ impl Wal {
     /// Returns [`WalError::Io`] on write or fsync failure and
     /// [`WalError::PayloadTooLarge`] if the payload exceeds the configured cap.
     pub fn append(&mut self, payload: &[u8]) -> Result<u64, WalError> {
-        let seq = self.next_seq;
-        record::encode_into(
-            seq,
-            payload,
-            self.options.max_record_payload_len,
-            &mut self.encode_buf,
-        )?;
-        self.file
-            .write_all(&self.encode_buf)
-            .map_err(map_io("write_all", &self.path))?;
-        if self.options.sync_per_append {
-            self.file
-                .sync_data()
-                .map_err(map_io("sync_data", &self.path))?;
+        let range = self.append_batch(&[payload])?;
+        Ok(range.start)
+    }
+
+    /// Append a batch of record payloads sequentially, committing them with a single `sync_data` call.
+    ///
+    /// The entire batch is validated and encoded into an in-memory buffer before any bytes are
+    /// written to disk. If any individual payload exceeds the configured maximum size, the function
+    /// returns an error immediately without modifying the write buffer or disk state.
+    ///
+    /// If `WalOptions::sync_per_append` is enabled, all records in the batch are committed with
+    /// a single fsync, eliminating the physical per-transfer fsync bottleneck.
+    ///
+    /// Returns the contiguous sequence range `start_seq..end_seq` assigned to the batch.
+    /// If `payloads` is empty, returns `self.next_seq..self.next_seq` without performing disk I/O.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WalError::PayloadTooLarge`] if any payload exceeds [`WalOptions::max_record_payload_len`].
+    /// Returns [`WalError::Io`] on write or fsync failure.
+    pub fn append_batch<T: AsRef<[u8]>>(
+        &mut self,
+        payloads: &[T],
+    ) -> Result<std::ops::Range<u64>, WalError> {
+        if payloads.is_empty() {
+            return Ok(self.next_seq..self.next_seq);
         }
+
+        // Validate all payload lengths before touching the buffer or disk to ensure failure leaves
+        // the log completely unmodified.
+        let mut total_len = 0usize;
+        for payload in payloads {
+            let len = payload.as_ref().len();
+            if len > self.options.max_record_payload_len {
+                return Err(WalError::PayloadTooLarge {
+                    actual: len,
+                    max: self.options.max_record_payload_len,
+                });
+            }
+            total_len =
+                total_len
+                    .checked_add(record::frame_len(len))
+                    .ok_or(WalError::PayloadTooLarge {
+                        actual: usize::MAX,
+                        max: self.options.max_record_payload_len,
+                    })?;
+        }
+
+        self.encode_buf.clear();
+        if self.encode_buf.capacity() < total_len {
+            self.encode_buf
+                .reserve(total_len - self.encode_buf.capacity());
+        }
+
+        let start_seq = self.next_seq;
+        let mut cur_seq = start_seq;
+
+        for payload in payloads {
+            record::encode_append(
+                cur_seq,
+                payload.as_ref(),
+                self.options.max_record_payload_len,
+                &mut self.encode_buf,
+            )?;
+            cur_seq += 1;
+        }
+
+        if let Err(err) = self
+            .file
+            .write_all(&self.encode_buf)
+            .map_err(map_io("write_all", &self.path))
+        {
+            let _ = self.file.set_len(self.committed_end);
+            let _ = self.file.seek(SeekFrom::Start(self.committed_end));
+            return Err(err);
+        }
+
+        if self.options.sync_per_append {
+            if let Err(err) = self
+                .file
+                .sync_data()
+                .map_err(map_io("sync_data", &self.path))
+            {
+                let _ = self.file.set_len(self.committed_end);
+                let _ = self.file.seek(SeekFrom::Start(self.committed_end));
+                return Err(err);
+            }
+        }
+
         self.committed_end += self.encode_buf.len() as u64;
-        self.next_seq = seq + 1;
-        Ok(seq)
+        self.next_seq = cur_seq;
+        Ok(start_seq..cur_seq)
+    }
+
+    /// Create a streaming iterator over the committed records in the log.
+    ///
+    /// Reads records sequentially from the start of the log in constant memory ($O(1)$).
+    /// Holds an exclusive mutable borrow of `self` for the duration of streaming, ensuring
+    /// no concurrent writes can invalidate the read position. When iteration completes or
+    /// the stream is dropped, the file cursor is restored to the end of the committed log.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WalError::Io`] if seeking to the beginning of the log fails.
+    pub fn stream_records(&mut self) -> Result<RecordStream<'_>, WalError> {
+        self.file
+            .seek(SeekFrom::Start(0))
+            .map_err(map_io("seek_start", &self.path))?;
+
+        Ok(RecordStream {
+            reader: BufReader::new(&mut self.file),
+            path: &self.path,
+            max_payload_len: self.options.max_record_payload_len,
+            expected_next_seq: self.next_seq,
+            committed_end: self.committed_end,
+            current_seq: 0,
+            seek_restored: false,
+            finished: false,
+        })
     }
 
     /// Replay the committed prefix: every record with seq `0..next_seq`.
     ///
-    /// Reads through this handle, so no path is re-opened and the same
-    /// streaming scanner as recovery is used. The file position is left at the
-    /// end of the log, so the next [`Self::append`] still lands at the end.
+    /// Reads through a streaming reader, bounding initial memory allocation to avoid OOM
+    /// hazards on large or corrupted logs. The file position is left at the end of the log,
+    /// so subsequent appends land safely at the end.
+    ///
     /// If the file changed underneath this handle, this returns
     /// [`WalError::ChangedWhileOpen`] instead of a silently partial or
     /// duplicated history.
@@ -190,50 +292,15 @@ impl Wal {
     /// # Errors
     ///
     /// Returns [`WalError::ChangedWhileOpen`] if the file no longer describes
-    /// a contiguous commit history and [`WalError::Io`] on read failure.
+    /// a contiguous commit history and [`WalError::Io`] on read or seek failure.
     pub fn read_records(&mut self) -> Result<Vec<Record>, WalError> {
-        let res = (|| {
-            self.file
-                .seek(SeekFrom::Start(0))
-                .map_err(map_io("seek_start", &self.path))?;
-
-            let mut records = Vec::with_capacity(self.next_seq as usize);
-            let mut reader = BufReader::new(&mut self.file);
-            while records.len() as u64 != self.next_seq {
-                match record::next_record(&mut reader, self.options.max_record_payload_len, true)
-                    .map_err(map_io("read_record", &self.path))?
-                {
-                    record::ScanStep::Record { seq, payload, .. } => {
-                        let Some(payload) = payload else {
-                            return Err(WalError::ChangedWhileOpen);
-                        };
-                        if seq != records.len() as u64 {
-                            return Err(WalError::ChangedWhileOpen);
-                        }
-                        records.push(Record { seq, payload });
-                    }
-                    record::ScanStep::End | record::ScanStep::Broken => {
-                        return Err(WalError::ChangedWhileOpen);
-                    }
-                }
-            }
-            match record::next_record(&mut reader, self.options.max_record_payload_len, false)
-                .map_err(map_io("read_record", &self.path))?
-            {
-                record::ScanStep::End => {}
-                record::ScanStep::Record { .. } | record::ScanStep::Broken => {
-                    return Err(WalError::ChangedWhileOpen);
-                }
-            }
-            Ok(records)
-        })();
-
-        let seek_res = self
-            .file
-            .seek(SeekFrom::Start(self.committed_end))
-            .map_err(map_io("seek_end", &self.path));
-        let records = res?;
-        seek_res?;
+        // Safely bound the initial capacity allocation to prevent OOM on massive logs.
+        let initial_cap = (self.next_seq as usize).min(1024);
+        let stream = self.stream_records()?;
+        let mut records = Vec::with_capacity(initial_cap);
+        for item in stream {
+            records.push(item?);
+        }
         Ok(records)
     }
 
@@ -261,6 +328,114 @@ impl Wal {
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
+    }
+}
+
+/// A streaming record iterator over the write-ahead log.
+///
+/// Yields records sequentially from the start of the log in constant memory ($O(1)$).
+/// Exclusively borrows the [`Wal`] for the lifetime `'a` of the stream.
+/// When iteration finishes or the stream is dropped, the file cursor is restored
+/// to the end of the committed log.
+#[derive(Debug)]
+pub struct RecordStream<'a> {
+    reader: BufReader<&'a mut File>,
+    path: &'a Path,
+    max_payload_len: usize,
+    expected_next_seq: u64,
+    committed_end: u64,
+    current_seq: u64,
+    seek_restored: bool,
+    finished: bool,
+}
+
+impl<'a> RecordStream<'a> {
+    fn restore_cursor(&mut self) -> Result<(), WalError> {
+        if !self.seek_restored {
+            self.reader
+                .seek(SeekFrom::Start(self.committed_end))
+                .map_err(map_io("seek_end", self.path))?;
+            self.seek_restored = true;
+        }
+        Ok(())
+    }
+
+    /// Explicitly close the stream, restoring the file cursor to the end of the committed log.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WalError::Io`] if seeking back to the end of the log fails.
+    pub fn close(mut self) -> Result<(), WalError> {
+        self.restore_cursor()
+    }
+}
+
+impl<'a> Drop for RecordStream<'a> {
+    fn drop(&mut self) {
+        let _ = self.restore_cursor();
+    }
+}
+
+impl<'a> Iterator for RecordStream<'a> {
+    type Item = Result<Record, WalError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+
+        if self.current_seq < self.expected_next_seq {
+            match record::next_record(&mut self.reader, self.max_payload_len, true)
+                .map_err(map_io("read_record", self.path))
+            {
+                Ok(record::ScanStep::Record { seq, payload, .. }) => {
+                    let Some(payload) = payload else {
+                        self.finished = true;
+                        return Some(Err(WalError::ChangedWhileOpen));
+                    };
+                    if seq != self.current_seq {
+                        self.finished = true;
+                        return Some(Err(WalError::ChangedWhileOpen));
+                    }
+                    self.current_seq += 1;
+                    Some(Ok(Record { seq, payload }))
+                }
+                Ok(record::ScanStep::End | record::ScanStep::Broken) => {
+                    self.finished = true;
+                    Some(Err(WalError::ChangedWhileOpen))
+                }
+                Err(err) => {
+                    self.finished = true;
+                    Some(Err(err))
+                }
+            }
+        } else {
+            self.finished = true;
+            match record::next_record(&mut self.reader, self.max_payload_len, false)
+                .map_err(map_io("read_record", self.path))
+            {
+                Ok(record::ScanStep::End) => {
+                    if let Err(err) = self.restore_cursor() {
+                        return Some(Err(err));
+                    }
+                    None
+                }
+                Ok(record::ScanStep::Record { .. } | record::ScanStep::Broken) => {
+                    Some(Err(WalError::ChangedWhileOpen))
+                }
+                Err(err) => Some(Err(err)),
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        if self.finished {
+            (0, Some(0))
+        } else {
+            let remaining = self.expected_next_seq.saturating_sub(self.current_seq);
+            let remaining_usize = usize::try_from(remaining).unwrap_or(usize::MAX);
+            (remaining_usize, Some(remaining_usize))
+        }
     }
 }
 
@@ -538,6 +713,63 @@ mod tests {
             Wal::open(&path, WalOptions::default()),
             Err(WalError::Locked { .. })
         ));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn append_batch_assigns_contiguous_seqs_and_single_sync() {
+        let path = temp_path("batch.log");
+        let _ = std::fs::remove_file(&path);
+        let mut wal = open_empty(&path);
+
+        let payloads = vec![
+            b"batch-0".to_vec(),
+            b"batch-1".to_vec(),
+            b"batch-2".to_vec(),
+        ];
+        let range = wal.append_batch(&payloads).expect("append batch");
+        assert_eq!(range, 0..3);
+        assert_eq!(wal.next_seq(), 3);
+
+        let records = wal.read_records().expect("read records");
+        assert_eq!(records.len(), 3);
+        assert_eq!(records[0].payload, b"batch-0");
+        assert_eq!(records[1].payload, b"batch-1");
+        assert_eq!(records[2].payload, b"batch-2");
+
+        let empty_range = wal.append_batch::<&[u8]>(&[]).expect("empty batch");
+        assert_eq!(empty_range, 3..3);
+        assert_eq!(wal.next_seq(), 3);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn stream_records_early_drop_restores_cursor_for_subsequent_appends() {
+        let path = temp_path("stream_drop.log");
+        let _ = std::fs::remove_file(&path);
+        let mut wal = open_empty(&path);
+
+        for i in 0..5 {
+            wal.append(format!("rec-{i}").as_bytes()).unwrap();
+        }
+
+        {
+            let mut stream = wal.stream_records().unwrap();
+            let first = stream.next().unwrap().unwrap();
+            assert_eq!(first.seq, 0);
+            assert_eq!(first.payload, b"rec-0");
+            // Drop stream early halfway through iteration
+        }
+
+        wal.append(b"rec-5").expect("append after dropped stream");
+        assert_eq!(wal.next_seq(), 6);
+
+        let all = wal.read_records().unwrap();
+        assert_eq!(all.len(), 6);
+        assert_eq!(all[5].seq, 5);
+        assert_eq!(all[5].payload, b"rec-5");
+
         let _ = std::fs::remove_file(&path);
     }
 }

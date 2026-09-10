@@ -62,13 +62,20 @@ impl SnapshotFile {
             });
         }
 
-        let tmp_path = self.path.with_extension("tmp");
-        let mut tmp = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&tmp_path)
-            .map_err(map_io("open_tmp", &tmp_path))?;
+        let parent = match self.path.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p,
+            _ => Path::new("."),
+        };
+
+        // Create a unique temporary file in the same directory to guarantee atomic rename
+        // on the same filesystem. Tempfile's drop handler automatically cleans up partial
+        // leftovers if writing, syncing, or persisting fails.
+        let mut tmp = tempfile::Builder::new()
+            .prefix(".snap-")
+            .suffix(".tmp")
+            .tempfile_in(parent)
+            .map_err(map_io("open_tmp", &self.path))?;
+
         tmp.write_all(&record::encode_frame(
             SNAP_MAGIC,
             VERSION,
@@ -76,26 +83,22 @@ impl SnapshotFile {
             payload,
             self.max_payload_len,
         )?)
-        .map_err(map_io("write_tmp", &tmp_path))?;
-        tmp.sync_data().map_err(map_io("sync_tmp", &tmp_path))?;
-        drop(tmp);
+        .map_err(map_io("write_tmp", &self.path))?;
 
-        std::fs::rename(&tmp_path, &self.path).map_err(map_io("rename", &self.path))?;
+        tmp.as_file()
+            .sync_data()
+            .map_err(map_io("sync_tmp", &self.path))?;
 
-        if let Some(parent) = self.path.parent() {
-            OpenOptions::new()
-                .read(true)
-                .open(parent)
-                .map_err(map_io("open_parent_dir", parent))?
-                .sync_all()
-                .map_err(map_io("sync_parent_dir", parent))?;
-        } else {
-            OpenOptions::new()
-                .read(true)
-                .open(".")
-                .map_err(map_io("open_current_dir", "."))?
-                .sync_all()
-                .map_err(map_io("sync_current_dir", "."))?;
+        tmp.persist(&self.path)
+            .map_err(|err| map_io("persist_snapshot", &self.path)(err.error))?;
+
+        // Sync parent directory to persist the directory entry rename.
+        // On Unix systems where directory fsync is supported (Linux), this flushes the rename.
+        // On platforms/filesystems where directory fsync is unsupported (macOS/Darwin where
+        // fsync on directory descriptors returns EINVAL/ENOTSUP, or Windows), we safely ignore
+        // errors to avoid failing an already durable snapshot write.
+        if let Ok(dir) = OpenOptions::new().read(true).open(parent) {
+            let _ = dir.sync_all();
         }
 
         Ok(())

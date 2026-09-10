@@ -102,6 +102,13 @@ impl Ledger {
         self.scale
     }
 
+    /// Highest timestamp recorded so far.
+    #[inline]
+    #[must_use]
+    pub const fn last_timestamp(&self) -> u64 {
+        self.last_timestamp
+    }
+
     /// Get an account by ID.
     ///
     /// # Errors
@@ -374,6 +381,82 @@ impl Ledger {
         #[cfg(debug_assertions)]
         self.check_after_mutation()?;
         Ok(produced)
+    }
+
+    /// Speculatively prepare a sequence of transactions, where each transaction is a sequence
+    /// of [`BatchOp`]s that must succeed atomically.
+    ///
+    /// If all operations in a transaction succeed, its speculative state modifications remain
+    /// visible to subsequent transactions in the slice, and its emitted [`LedgerEvent`]s are
+    /// returned in `Ok(events)`.
+    ///
+    /// If any operation in a transaction fails, all speculative modifications from that
+    /// transaction are rolled back, its error is recorded in `Err(err)`, and execution proceeds
+    /// to the next transaction.
+    ///
+    /// At the conclusion of this method, all speculative changes are rolled back to the ledger's
+    /// pre-call state. The caller is responsible for persisting all produced events to the
+    /// write-ahead log before applying them permanently via [`Self::commit_events`].
+    pub fn prepare_transactions(
+        &mut self,
+        txs: &[Vec<BatchOp>],
+    ) -> Vec<Result<Vec<LedgerEvent>, LedgerError>> {
+        let base_journal_len = self.journal.len();
+        let base_timestamp = self.last_timestamp;
+
+        let mut all_undo = Vec::new();
+        let mut results = Vec::with_capacity(txs.len());
+
+        for tx in txs {
+            let tx_journal_len = self.journal.len();
+            let tx_timestamp = self.last_timestamp;
+            let mut tx_undo = Vec::new();
+            let mut tx_err = None;
+
+            for op in tx {
+                let mut pre = Vec::new();
+                if let Err(err) = op_pre_images(op, self, &mut pre) {
+                    tx_err = Some(err);
+                    break;
+                }
+                if let Err(err) = self.apply_batch_op(op) {
+                    tx_err = Some(err);
+                    break;
+                }
+                tx_undo.extend(pre);
+            }
+
+            if let Some(err) = tx_err {
+                self.rollback(&tx_undo, tx_journal_len, tx_timestamp);
+                results.push(Err(err));
+            } else {
+                let events = self.journal[tx_journal_len..].to_vec();
+                all_undo.extend(tx_undo);
+                results.push(Ok(events));
+            }
+        }
+
+        self.rollback(&all_undo, base_journal_len, base_timestamp);
+        results
+    }
+
+    /// Speculatively prepare a batch of operations individually, returning a per-operation
+    /// result without aborting the batch on individual failures.
+    ///
+    /// Operations that succeed mutate the speculative ledger state so that later operations
+    /// in the same batch observe their effects (e.g. creating an account before transferring to it).
+    /// If an operation fails, any speculative mutations from that operation are rolled back,
+    /// its error is recorded, and execution proceeds with the next operation.
+    ///
+    /// At the conclusion of this method, all speculative changes are rolled back to the ledger's
+    /// pre-call state. The caller is responsible for persisting all produced events to the
+    /// write-ahead log before applying them permanently via [`Self::commit_events`].
+    pub fn prepare_batch_results(
+        &mut self,
+        ops: &[BatchOp],
+    ) -> Vec<Result<Vec<LedgerEvent>, LedgerError>> {
+        let txs: Vec<Vec<BatchOp>> = ops.iter().map(|op| vec![op.clone()]).collect();
+        self.prepare_transactions(&txs)
     }
 
     /// Convenience wrapper around [`Self::prepare_batch`] for immediate transfers.
@@ -1606,5 +1689,195 @@ mod tests {
                 case.name
             );
         }
+    }
+
+    #[test]
+    fn prepare_batch_results_isolates_failures_and_preserves_intra_batch_visibility() {
+        let mut ledger = Ledger::new(Scale::usdc());
+        let ops = vec![
+            BatchOp::CreateAccount {
+                id: AccountId::new(1),
+                account_type: AccountType::Asset,
+                flags: AccountFlags::bank_asset(),
+                scale: Scale::usdc(),
+                timestamp: 1,
+            },
+            BatchOp::CreateAccount {
+                id: AccountId::new(2),
+                account_type: AccountType::Liability,
+                flags: AccountFlags::customer(),
+                scale: Scale::usdc(),
+                timestamp: 2,
+            },
+            BatchOp::Transfer(
+                Transfer::new_immediate(
+                    TransferId::new(10),
+                    AccountId::new(1),
+                    AccountId::new(2),
+                    Amount::new(500),
+                    3,
+                )
+                .unwrap(),
+            ),
+            BatchOp::Transfer(
+                Transfer::new_immediate(
+                    TransferId::new(11),
+                    AccountId::new(2),
+                    AccountId::new(1),
+                    Amount::new(999_999),
+                    4,
+                )
+                .unwrap(),
+            ),
+            BatchOp::Transfer(
+                Transfer::new_immediate(
+                    TransferId::new(12),
+                    AccountId::new(99),
+                    AccountId::new(1),
+                    Amount::new(10),
+                    5,
+                )
+                .unwrap(),
+            ),
+            BatchOp::CloseAccount {
+                id: AccountId::new(2),
+                timestamp: 6,
+            },
+        ];
+
+        let results = ledger.prepare_batch_results(&ops);
+        assert_eq!(results.len(), 6);
+        assert!(results[0].is_ok());
+        assert!(results[1].is_ok());
+        assert!(results[2].is_ok());
+        assert!(matches!(
+            results[3].as_ref().unwrap_err(),
+            LedgerError::InsufficientFunds { .. }
+        ));
+        assert!(matches!(
+            results[4].as_ref().unwrap_err(),
+            LedgerError::AccountNotFound(_)
+        ));
+        assert!(results[5].is_ok());
+
+        assert_eq!(ledger.journal().len(), 0);
+        assert!(ledger.get_account(AccountId::new(1)).is_err());
+
+        let successful_events: Vec<LedgerEvent> = results
+            .into_iter()
+            .filter_map(Result::ok)
+            .flatten()
+            .collect();
+        ledger
+            .commit_events(&successful_events)
+            .expect("commit successful events");
+
+        assert_eq!(ledger.journal().len(), 4);
+        let acc2 = ledger.get_account(AccountId::new(2)).unwrap();
+        assert!(acc2.flags.is_closed);
+        assert_eq!(acc2.balance.credits_posted, Amount::new(500));
+    }
+
+    #[test]
+    fn prepare_transactions_isolates_multi_op_atomic_failures() {
+        let mut ledger = Ledger::new(Scale::usdc());
+        let txs = vec![
+            vec![BatchOp::CreateAccount {
+                id: AccountId::new(1),
+                account_type: AccountType::Asset,
+                flags: AccountFlags::bank_asset(),
+                scale: Scale::usdc(),
+                timestamp: 1,
+            }],
+            vec![
+                BatchOp::CreateAccount {
+                    id: AccountId::new(2),
+                    account_type: AccountType::Liability,
+                    flags: AccountFlags::customer(),
+                    scale: Scale::usdc(),
+                    timestamp: 2,
+                },
+                BatchOp::Transfer(
+                    Transfer::new_immediate(
+                        TransferId::new(10),
+                        AccountId::new(1),
+                        AccountId::new(2),
+                        Amount::new(1_000),
+                        3,
+                    )
+                    .unwrap(),
+                ),
+            ],
+            vec![
+                BatchOp::CreateAccount {
+                    id: AccountId::new(3),
+                    account_type: AccountType::Liability,
+                    flags: AccountFlags::customer(),
+                    scale: Scale::usdc(),
+                    timestamp: 4,
+                },
+                BatchOp::Transfer(
+                    Transfer::new_immediate(
+                        TransferId::new(11),
+                        AccountId::new(2),
+                        AccountId::new(3),
+                        Amount::new(999_999),
+                        5,
+                    )
+                    .unwrap(),
+                ),
+            ],
+            vec![BatchOp::Transfer(
+                Transfer::new_immediate(
+                    TransferId::new(12),
+                    AccountId::new(2),
+                    AccountId::new(1),
+                    Amount::new(500),
+                    6,
+                )
+                .unwrap(),
+            )],
+        ];
+
+        let results = ledger.prepare_transactions(&txs);
+        assert_eq!(results.len(), 4);
+        assert!(results[0].is_ok());
+        assert!(results[1].is_ok());
+        assert!(matches!(
+            results[2].as_ref().unwrap_err(),
+            LedgerError::InsufficientFunds { .. }
+        ));
+        assert!(results[3].is_ok());
+
+        assert_eq!(ledger.journal().len(), 0);
+
+        let successful_events: Vec<LedgerEvent> = results
+            .into_iter()
+            .filter_map(Result::ok)
+            .flatten()
+            .collect();
+        ledger
+            .commit_events(&successful_events)
+            .expect("commit events");
+
+        assert!(ledger.get_account(AccountId::new(1)).is_ok());
+        assert!(ledger.get_account(AccountId::new(2)).is_ok());
+        assert!(ledger.get_account(AccountId::new(3)).is_err());
+        assert_eq!(
+            ledger
+                .get_account(AccountId::new(2))
+                .unwrap()
+                .balance
+                .credits_posted,
+            Amount::new(1_000)
+        );
+        assert_eq!(
+            ledger
+                .get_account(AccountId::new(2))
+                .unwrap()
+                .balance
+                .debits_posted,
+            Amount::new(500)
+        );
     }
 }

@@ -42,4 +42,4 @@ pub mod wal;
 pub use error::{HeaderError, WalError};
 pub use record::{Record, DEFAULT_MAX_PAYLOAD_LEN};
 pub use snapshot::{Snapshot, SnapshotFile};
-pub use wal::{Recovery, Wal, WalOptions};
+pub use wal::{RecordStream, Recovery, Wal, WalOptions};

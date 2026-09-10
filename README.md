@@ -39,15 +39,17 @@ owns the disk. At a high level it provides:
   balances-can't-leak invariants. Replay is fail-loud and byte-for-byte
   deterministic. *(v0.1 shipped)*
 * **`crates/wal`** — an append-only stream of length-prefixed, CRC32C-checksummed
-  frames with torn-write recovery to the last verified record and snapshot
-  checkpoints to bound restart replay. *(v0.1 shipped)*
-* **`crates/raft`** — three-node consensus. *(planned)*
-* **`crates/ingest`** — tonic/gRPC, micro-batched, bounded queues with
-  backpressure. *(planned)*
+  frames with torn-write recovery to the last verified record, streaming constant-memory
+  readers, multi-record batch appends, and snapshot checkpoints to bound restart replay. *(v0.1 shipped)*
+* **`crates/ingest`** — high-performance tonic/gRPC network ingress with protobuf schemas,
+  bounded non-blocking queues, backpressure load-shedding (`RESOURCE_EXHAUSTED` under overload),
+  a single-writer micro-batch accumulator, and atomic single-fsync group commits. *(v0.1 shipped)*
+* **`crates/raft`** — three-node consensus; log replication and failover without split-brain. *(planned)*
 * **`crates/merkle` + `crates/solana-settle`** — Merkle Mountain Range roots
   committed to a Solana PDA; USDC legs. *(planned)*
 * **`apps/demo`** — reference client, e2e suite, and the "Verify transfer"
   surface. *(planned)*
+
 
 ## Example
 
@@ -153,6 +155,29 @@ record boundary** — is proven to the byte: `crates/wal/tests/crash.rs` and
 mixed journal and assert the rebuilt ledger equals exactly the acked prefix,
 byte-for-byte, plus `verify_invariants`.
 
+### Network Ingress & Micro-Batching (`crates/ingest`)
+
+High-throughput financial ledgers cannot afford a disk fsync per network request. `crates/ingest`
+provides a high-performance tonic/gRPC ingress layer that decouples concurrent ingress connections
+from disk I/O:
+
+1. **Protobuf Contract** (`proto/ledger.proto`) — strongly typed domain RPCs (`CreateAccount`,
+   `CreateTransfer`, `CreatePending`, `PostPending`, `VoidPending`, `ApplyBatch`, `GetAccount`,
+   `GetTransfer`). Currency amounts use integer atomic units plus fixed scale (`u8`),
+   eliminating floating-point precision bugs.
+2. **Bounded Queue & Load Shedding** — ingress workers dispatch requests into a bounded
+   non-blocking channel (`IngestQueue`). When the queue reaches capacity under traffic spikes, requests are
+   immediately shed with gRPC `RESOURCE_EXHAUSTED` status, shielding the state engine from
+   unbounded memory growth and cascading latency.
+3. **Single-Writer Micro-Batch Accumulator** — a dedicated worker task accumulates incoming requests
+   up to a configurable batch size (e.g. 512 operations) or maximum delay window (e.g. 2ms).
+4. **Group Commit** — the accumulated batch is validated, serialized via `codec`, and committed to the
+   write-ahead log with a single `append_batch` call. A single `fsync` commits hundreds of
+   transactions simultaneously, amortizing disk latency down to microseconds per transfer.
+5. **Causal FIFO Ordering** — requests are executed strictly in queue arrival order, guaranteeing
+   immediate intra-batch and cross-operation visibility (e.g. creating an account and funding it
+   in subsequent requests succeeds deterministically without race conditions).
+
 ## Testing
 
 * **Unit** (`tests/unit.rs`, 21 tests) — exact-error matrix for every rejection
@@ -171,15 +196,19 @@ byte-for-byte, plus `verify_invariants`.
 * **wal** (`crates/wal`: 34 tests) — every-byte-boundary crash sweeps over
   byte-corrupted and partially-written logs, proving recovery lands exactly on
   the last verified frame ([runbook][runbook]).
+* **Network Ingress & Backpressure** (`crates/ingest`: 10 tests) — end-to-end gRPC integration
+  suite verifying the full RPC lifecycle, two-phase holds, scale rejections, atomic batch rollbacks,
+  and high-concurrency burst load-shedding (`RESOURCE_EXHAUSTED`).
 
 ## Benchmarks
+
+### Hot-Path State Machine Throughput
 
 Hot-path throughput is measured by the criterion harness at
 `benches/throughput.rs` (statistical medians, [docs/BENCHMARKS.md][benchmarks]),
 and `scripts/bench_gate.py` fails CI when a median exceeds its committed bound
-in `docs/benchmarks/baseline.json` (ADR-0008). Medians on this development
-machine (Apple silicon, `profile.release` with LTO + overflow checks),
-2026-09-08:
+in `docs/benchmarks/baseline.json` (ADR-0008). Medians on Apple silicon (`profile.release`
+with LTO + overflow checks):
 
 * `create_transfer`: ~4.4M transfers/sec (~229 ns/op)
 * two-phase round-trip: ~1.6M pairs/sec (~627 ns/op)
@@ -188,6 +217,15 @@ machine (Apple silicon, `profile.release` with LTO + overflow checks),
 
 Each exceeds the >1M transfers/sec claim in ADR-0001, confirming the
 `BTreeMap` determinism cost is not observable on the hot path.
+
+### Durability & Persistence (`crates/wal`)
+
+Durability and recovery throughput measured via `benches/persistence.rs` (10,000 batches x 16 KiB):
+
+* `append (fsync per batch)`: 3.50 MB/s (~214 batches/sec, 4.68 ms/batch)
+* `append (buffered, single sync)`: 259.30 MB/s (~15,827 batches/sec, 63.2 µs/batch)
+* `recover + replay 10,000 batches`: 1092.93 MB/s (~15.0 µs/batch)
+
 
 ## Supported Rust versions
 

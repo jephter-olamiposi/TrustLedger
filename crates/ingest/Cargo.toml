@@ -1,0 +1,27 @@
+[package]
+name = "ingest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Network ingress, micro-batching, and gRPC service for TrustLedger"
+
+[dependencies]
+tonic = "0.12"
+prost = "0.13"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros", "time", "net"] }
+thiserror.workspace = true
+ledger-core = { path = "../ledger-core", version = "0.1" }
+wal = { path = "../wal", version = "0.1" }
+
+[build-dependencies]
+tonic-build = "0.12"
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["net"] }
+
+[lints]
+workspace = true
