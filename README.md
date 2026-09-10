@@ -51,8 +51,9 @@ owns the disk. At a high level it provides:
 * **`crates/solana-settle`** — Solana on-chain settlement program and independent verifier CLI.
   Commits batch roots to a Program Derived Address (PDA) with tamper-evident root chaining,
   on-chain inclusion verification in < 4k CUs, and standalone offline receipt verification (ADR-0010). *(v0.1 shipped)*
-* **`apps/demo`** — reference client, e2e suite, and the "Verify transfer"
-  surface. *(planned)*
+* **`apps/demo`** — reference client, payment lifecycle state machine (two-phase holds), HMAC-SHA256
+  card webhook processor with anti-replay freshness, multi-rail settlement adapters (Solana USDC PDA + Mock ACH),
+  continuous 3-way reconciliation ($Drift \equiv 0$), and embedded dashboard with transfer verification (ADR-0011). *(v0.1 shipped)*
 
 
 ## Example
@@ -211,6 +212,10 @@ from disk I/O:
 * **On-Chain Settlement & Verifier** (`crates/solana-settle`: 4 tests) — PDA initialization, sequential batch
   commitments with tamper-evident root chaining, on-chain proof verification in BPF runtime (< 4k CUs), and
   standalone verifier CLI execution.
+* **Reference Client & Reconciliation** (`apps/demo`: 5 tests) — end-to-end integration
+  suite verifying two-phase card payment authorization/capture/void, HMAC-SHA256 signature and replay defenses,
+  multi-rail settlement with cryptographic receipts, continuous 3-way reconciliation ($Drift \equiv 0$ and incident detection),
+  and live HTTP API / dashboard smoke testing.
 
 ## Cryptographic Verifiability & On-Chain Finality
 
@@ -234,6 +239,30 @@ When verified, the CLI exits with code `0` and outputs:
 [VERIFIED] Cryptographic proof matches on-chain Merkle root!
 Status: Transfer is immutably included in settlement batch 42.
 ```
+
+## Interactive Reference Client & Demonstration Server (`apps/demo`)
+
+TrustLedger includes an interactive demo server and recruiter-facing dashboard implementing realistic
+fintech payment processing, card gateway webhooks, multi-rail settlement, and real-time reconciliation.
+
+### Running the Demo
+
+```bash
+# Start the demo HTTP server and dashboard on port 8080
+cargo run -p demo
+
+# Open the interactive web dashboard:
+open http://127.0.0.1:8080/
+```
+
+### Key Capabilities
+
+1. **Two-Phase Payment Holds:** Authorize reserves customer funds; capture posts hold to merchant; void releases funds.
+2. **Secure Card Webhooks (`/api/webhooks/card`):** Verified via constant-time HMAC-SHA256 with a 300s freshness window and atomic deduplication.
+3. **Pluggable Settlement Rails (`/api/settlement/batch`):** Settle transaction batches via Solana USDC (MMR commitment to PDA) or banking ACH netting.
+4. **Automated 3-Way Reconciliation (`/api/reconciliation`):** Continuous drift audit verifying:
+   $$\text{Drift} = \text{Ledger Settled Balance} - \text{App Captured Payments} \equiv 0$$
+5. **On-Chain Cryptographic Verification (`/api/verify`):** Verifies cryptographic Merkle inclusion proofs against on-chain settlement roots.
 
 ## Benchmarks
 

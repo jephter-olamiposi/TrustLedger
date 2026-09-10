@@ -138,6 +138,12 @@ impl Ledger {
         &self.journal
     }
 
+    /// Returns an iterator over all recorded transfers in the ledger.
+    #[inline]
+    pub fn transfers(&self) -> impl Iterator<Item = &Transfer> {
+        self.transfers.values()
+    }
+
     /// Create a new account with zero balance.
     ///
     /// # Errors

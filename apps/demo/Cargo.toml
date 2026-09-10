@@ -1,0 +1,24 @@
+[package]
+name = "demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "TrustLedger reference client, demo application, and verification surface"
+
+[dependencies]
+ledger-core = { path = "../../crates/ledger-core", version = "0.1" }
+merkle = { path = "../../crates/merkle", version = "0.1" }
+solana-settle = { path = "../../crates/solana-settle", version = "0.1" }
+solana-program = "2.2.0"
+axum = "0.7"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
+serde = { workspace = true }
+serde_json = "1.0"
+thiserror = { workspace = true }
+sha2 = "0.10"
+hmac = "0.12"
+
+[dev-dependencies]
+tempfile = { workspace = true }
