@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ledger_core::{AccountFlags, AccountId, AccountType, Amount, Scale, Transfer, TransferId};
 use raft::{RaftCluster, RaftRequest};
@@ -64,14 +64,25 @@ async fn test_jepsen_minority_partition_and_healing() {
     cluster.partition(&minority, &majority).await;
 
     // Wait for the majority partition to detect heartbeat loss and elect a new leader
-    // (election timeout is 150-300ms)
-    sleep(Duration::from_millis(600)).await;
+    // (election timeout is 150-300ms, allow up to 2s under heavy test runner load)
+    let elect_start = Instant::now();
+    let mut new_leader_id = None;
+    while elect_start.elapsed() < Duration::from_secs(2) {
+        for &id in &majority {
+            if let Some(node) = cluster.get_node(id) {
+                if node.is_leader() {
+                    new_leader_id = Some(id);
+                    break;
+                }
+            }
+        }
+        if new_leader_id.is_some() {
+            break;
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
 
-    let new_leader_id = majority
-        .iter()
-        .copied()
-        .find(|&id| cluster.get_node(id).map(|n| n.is_leader()).unwrap_or(false))
-        .expect("majority partition must elect a new leader");
+    let new_leader_id = new_leader_id.expect("majority partition must elect a new leader");
     assert_ne!(new_leader_id, initial_leader);
 
     // Commit 3 transfers to the new leader on the majority partition
@@ -97,7 +108,29 @@ async fn test_jepsen_minority_partition_and_healing() {
     cluster.heal().await;
 
     // Allow cluster to synchronize and minority to catch up
-    sleep(Duration::from_millis(600)).await;
+    let heal_start = Instant::now();
+    while heal_start.elapsed() < Duration::from_secs(2) {
+        let mut all_caught_up = true;
+        for id in 1..=3 {
+            if let Some(node) = cluster.get_node(id) {
+                let debits = node
+                    .read_ledger(|l| {
+                        l.get_account(acc1_id)
+                            .map(|a| a.balance.debits_posted.as_u128())
+                            .unwrap_or(0)
+                    })
+                    .await;
+                if debits != 2500 {
+                    all_caught_up = false;
+                    break;
+                }
+            }
+        }
+        if all_caught_up {
+            break;
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
 
     // Verify all 3 nodes have converged to identical state:
     // Total transferred: 1000 + (3 * 500) = 2500

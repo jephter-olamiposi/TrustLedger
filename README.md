@@ -45,8 +45,12 @@ owns the disk. At a high level it provides:
   bounded non-blocking queues, backpressure load-shedding (`RESOURCE_EXHAUSTED` under overload),
   a single-writer micro-batch accumulator, and atomic single-fsync group commits. *(v0.1 shipped)*
 * **`crates/raft`** — three-node consensus cluster powered by OpenRaft; decoupled storage (`storage-v2`), simulated in-memory network router for deterministic chaos testing, automated failover in < 0.5s, and split-brain prevention under network partitions (ADR-0009). *(v0.1 shipped)*
-* **`crates/merkle` + `crates/solana-settle`** — Merkle Mountain Range roots
-  committed to a Solana PDA; USDC legs. *(planned)*
+* **`crates/merkle`** — an append-only Merkle Mountain Range (MMR) cryptographic proof engine
+  supporting $O(\log N)$ inclusion proofs (~640 bytes for $10^6$ transfers), RFC 6962 domain separation,
+  and peak bagging. *(v0.1 shipped)*
+* **`crates/solana-settle`** — Solana on-chain settlement program and independent verifier CLI.
+  Commits batch roots to a Program Derived Address (PDA) with tamper-evident root chaining,
+  on-chain inclusion verification in < 4k CUs, and standalone offline receipt verification (ADR-0010). *(v0.1 shipped)*
 * **`apps/demo`** — reference client, e2e suite, and the "Verify transfer"
   surface. *(planned)*
 
@@ -202,6 +206,34 @@ from disk I/O:
 * **Distributed Consensus & Chaos** (`crates/raft`: 3 tests) — 3-node cluster bootstrap and
   quorum replication, Jepsen-style network partition simulations (minority isolation, majority progression,
   partition healing, log truncation, zero split-brain), and rapid leader failover (< 0.5s failover SLO).
+* **Merkle Mountain Range (MMR)** (`crates/merkle`: 9 tests) — proptests across arbitrary leaf counts,
+  domain-separated SHA-256 leaf/node/peak hashing (RFC 6962), logarithmic inclusion proofs, and tamper detection.
+* **On-Chain Settlement & Verifier** (`crates/solana-settle`: 4 tests) — PDA initialization, sequential batch
+  commitments with tamper-evident root chaining, on-chain proof verification in BPF runtime (< 4k CUs), and
+  standalone verifier CLI execution.
+
+## Cryptographic Verifiability & On-Chain Finality
+
+TrustLedger commits each settled batch root to a Solana Program Derived Address (PDA). Any client or
+auditor can independently verify the inclusion of a transfer in $O(\log N)$ steps without trusting
+the operator:
+
+```bash
+# Verify a portable transfer receipt using the standalone verifier CLI
+cargo run -p solana-settle --bin verifier -- --receipt path/to/receipt.json
+
+# Or verify direct cryptographic parameters:
+cargo run -p solana-settle --bin verifier -- \
+  --root <64-char-hex-merkle-root> \
+  --leaf <64-char-hex-transfer-hash> \
+  --proof-file path/to/proof.bin
+```
+
+When verified, the CLI exits with code `0` and outputs:
+```text
+[VERIFIED] Cryptographic proof matches on-chain Merkle root!
+Status: Transfer is immutably included in settlement batch 42.
+```
 
 ## Benchmarks
 

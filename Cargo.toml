@@ -5,6 +5,8 @@ members = [
     "crates/wal",
     "crates/ingest",
     "crates/raft",
+    "crates/merkle",
+    "crates/solana-settle",
 ]
 
 [workspace.package]
