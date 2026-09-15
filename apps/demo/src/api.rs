@@ -49,6 +49,8 @@ pub struct AppState {
     pub next_transfer_id: AtomicU64,
     /// Current settlement batch sequence counter.
     pub batch_seq: AtomicU64,
+    /// Real-time Prometheus metrics collection.
+    pub metrics: observability::LedgerMetrics,
 }
 
 impl AppState {
@@ -90,6 +92,7 @@ impl AppState {
             next_payment_id: AtomicU64::new(5000),
             next_transfer_id: AtomicU64::new(20_000),
             batch_seq: AtomicU64::new(0),
+            metrics: observability::LedgerMetrics::new(),
         })
     }
 }
@@ -98,6 +101,7 @@ impl AppState {
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/", get(handle_dashboard))
+        .route("/metrics", get(handle_metrics))
         .route("/api/payments/authorize", post(handle_authorize))
         .route("/api/payments/:id/capture", post(handle_capture))
         .route("/api/payments/:id/void", post(handle_void))
@@ -173,6 +177,7 @@ async fn handle_authorize(
     let customer_acc = AccountDirectory::customer(req.customer_id);
     let merchant_acc = AccountDirectory::merchant(req.merchant_id);
 
+    state.metrics.transfers_received.inc();
     let hold = Transfer::new_pending(
         TransferId::new(transfer_id),
         customer_acc,
@@ -181,6 +186,7 @@ async fn handle_authorize(
         now,
     )
     .map_err(|e| {
+        state.metrics.transfers_rejected.inc();
         state.idempotency.release_on_failure(&req.idempotency_key);
         (StatusCode::BAD_REQUEST, e.to_string())
     })?;
@@ -193,11 +199,13 @@ async fn handle_authorize(
             )
         })?;
         ledger.create_pending(hold).map_err(|e| {
+            state.metrics.transfers_rejected.inc();
             state.idempotency.release_on_failure(&req.idempotency_key);
             (StatusCode::PAYMENT_REQUIRED, e.to_string())
         })?;
     }
 
+    state.metrics.transfers_committed.inc();
     let payment = Payment::new_authorized(
         payment_id,
         req.merchant_id,
@@ -560,6 +568,12 @@ async fn handle_settlement_batch(
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     };
 
+    state.metrics.settlement_batches_committed.inc();
+    state
+        .metrics
+        .settlement_amount_total
+        .inc_by(submission.total_amount as u64);
+
     Ok(Json(BatchResponse {
         rail: submission.rail_name,
         batch_seq: submission.batch_seq,
@@ -591,6 +605,13 @@ async fn handle_reconciliation(
     let report = ReconciliationEngine::audit(&payments, &ledger, &merchants, None, 1_700_000_200)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
+    state.metrics.reconciliation_audits_total.inc();
+    let drift_i64 = report.drift.clamp(i64::MIN as i128, i64::MAX as i128) as i64;
+    state.metrics.reconciliation_drift_gauge.set(drift_i64);
+    if report.status == crate::reconciliation::ReconciliationStatus::DriftDetected {
+        state.metrics.reconciliation_incidents_total.inc();
+    }
+
     Ok(Json(report))
 }
 
@@ -617,20 +638,34 @@ pub struct VerifyResponse {
 }
 
 async fn handle_verify_receipt(
+    State(state): State<Arc<AppState>>,
     Json(req): Json<VerifyRequest>,
 ) -> Result<Json<VerifyResponse>, (StatusCode, String)> {
     match req.receipt.verify() {
-        Ok(()) => Ok(Json(VerifyResponse {
-            verified: true,
-            transfer_id: req.receipt.transfer_id,
-            batch_seq: req.receipt.batch_seq,
-            merkle_root: req.receipt.merkle_root,
-            message: "Cryptographic proof matches on-chain Merkle root. Transfer is immutable."
-                .to_string(),
-        })),
+        Ok(()) => {
+            state.metrics.merkle_proofs_verified.inc();
+            Ok(Json(VerifyResponse {
+                verified: true,
+                transfer_id: req.receipt.transfer_id,
+                batch_seq: req.receipt.batch_seq,
+                merkle_root: req.receipt.merkle_root,
+                message: "Cryptographic proof matches on-chain Merkle root. Transfer is immutable."
+                    .to_string(),
+            }))
+        }
         Err(e) => Err((
             StatusCode::BAD_REQUEST,
             format!("Proof verification failed: {e}"),
         )),
     }
+}
+
+async fn handle_metrics(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        state.metrics.render_prometheus(),
+    )
 }

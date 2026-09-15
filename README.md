@@ -54,6 +54,11 @@ owns the disk. At a high level it provides:
 * **`apps/demo`** — reference client, payment lifecycle state machine (two-phase holds), HMAC-SHA256
   card webhook processor with anti-replay freshness, multi-rail settlement adapters (Solana USDC PDA + Mock ACH),
   continuous 3-way reconciliation ($Drift \equiv 0$), and embedded dashboard with transfer verification (ADR-0011). *(v0.1 shipped)*
+* **`crates/observability`** — lock-free atomic telemetry metrics (`Counter`, `Gauge`, fixed-bucket `Histogram`)
+  and Prometheus 2.0 exposition text formatting (`/metrics`) for real-time observability. *(v0.1 shipped)*
+* **`simulator`** — FoundationDB / TigerBeetle-style Deterministic Simulation Testing (DST) harness executing
+  discrete-event seeded pseudo-random chaos fault injection (packet loss, latency jitter, dynamic network partitions,
+  torn writes, crash restarts) proving wealth conservation with 100% replayable reproducibility (ADR-0012). *(v0.1 shipped)*
 
 
 ## Example
@@ -263,6 +268,38 @@ open http://127.0.0.1:8080/
 4. **Automated 3-Way Reconciliation (`/api/reconciliation`):** Continuous drift audit verifying:
    $$\text{Drift} = \text{Ledger Settled Balance} - \text{App Captured Payments} \equiv 0$$
 5. **On-Chain Cryptographic Verification (`/api/verify`):** Verifies cryptographic Merkle inclusion proofs against on-chain settlement roots.
+
+## Deterministic Simulation Testing (DST) Harness
+
+TrustLedger adopts FoundationDB and TigerBeetle-style discrete-event Deterministic Simulation Testing (`simulator/`). By virtualizing time into discrete ticks and driving all scheduling decisions through a seeded PRNG (`rand_chacha::ChaCha8Rng`), any failure encountered across millions of state transitions can be replayed on an engineer's laptop with 100% determinism:
+
+```bash
+# Run all pre-packaged scenarios (NetworkPartition, CrashTornWrite, ChaosSoak):
+cargo run -p simulator -- --scenario all --steps 200
+
+# Fuzz 50 randomized simulation seeds exploring edge-case partitions and crashes:
+cargo run -p simulator -- --fuzz 50 --steps 100
+
+# Replay an exact failure scenario deterministically:
+cargo run -p simulator -- --seed 42 --scenario soak --steps 500
+```
+
+## Production Operations & Docker Orchestration
+
+Launch a complete multi-node TrustLedger cluster, Prometheus telemetry scraper, and interactive demo dashboard with one command:
+
+```bash
+# Start 3-node Raft consensus cluster, Prometheus, and Demo dashboard:
+docker compose -f docker/docker-compose.yml up -d
+
+# Inspect live Prometheus exposition metrics:
+curl -s http://localhost:8080/metrics | grep trustledger_
+
+# Open the live operational dashboard:
+open http://localhost:8080/
+```
+
+See [`docs/failure-modes.md`](docs/failure-modes.md) for the Failure Modes & Effects Analysis (FMEA) and [`docs/OPERATOR-RUNBOOK.md`](docs/OPERATOR-RUNBOOK.md) for incident response runbooks.
 
 ## Benchmarks
 

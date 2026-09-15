@@ -1,0 +1,75 @@
+version: "3.8"
+
+services:
+  demo:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: trustledger-demo
+    ports:
+      - "8080:8080"
+    environment:
+      - RUST_LOG=info
+      - PORT=8080
+    networks:
+      - trustledger-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/metrics"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  prometheus:
+    image: prom/prometheus:v2.45.0
+    container_name: trustledger-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    networks:
+      - trustledger-net
+    depends_on:
+      - demo
+
+  raft-node-1:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: trustledger-raft-1
+    environment:
+      - NODE_ID=1
+      - PORT=50051
+    ports:
+      - "50051:50051"
+    networks:
+      - trustledger-net
+
+  raft-node-2:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: trustledger-raft-2
+    environment:
+      - NODE_ID=2
+      - PORT=50052
+    ports:
+      - "50052:50052"
+    networks:
+      - trustledger-net
+
+  raft-node-3:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: trustledger-raft-3
+    environment:
+      - NODE_ID=3
+      - PORT=50053
+    ports:
+      - "50053:50053"
+    networks:
+      - trustledger-net
+
+networks:
+  trustledger-net:
+    driver: bridge

@@ -313,14 +313,20 @@ async fn test_http_api_smoke_and_dashboard() {
     });
 
     // Check dashboard HTML endpoint
-    let client = reqwest_or_hyper(addr).await;
+    let client = reqwest_or_hyper(addr, "/").await;
     assert!(client.contains("TrustLedger Settlement Engine"));
+
+    // Check Prometheus /metrics endpoint
+    let metrics_resp = reqwest_or_hyper(addr, "/metrics").await;
+    assert!(metrics_resp.contains("HTTP/1.1 200 OK"));
+    assert!(metrics_resp.contains("trustledger_transfers_received_total"));
+    assert!(metrics_resp.contains("trustledger_reconciliation_drift_gauge"));
 }
 
-async fn reqwest_or_hyper(addr: std::net::SocketAddr) -> String {
+async fn reqwest_or_hyper(addr: std::net::SocketAddr, path: &str) -> String {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
-    let req = "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+    let req = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
     stream
         .write_all(req.as_bytes())
         .await

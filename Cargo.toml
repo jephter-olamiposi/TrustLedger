@@ -7,7 +7,9 @@ members = [
     "crates/raft",
     "crates/merkle",
     "crates/solana-settle",
+    "crates/observability",
     "apps/demo",
+    "simulator",
 ]
 
 [workspace.package]

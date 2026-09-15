@@ -742,6 +742,7 @@ dependencies = [
  "hmac",
  "ledger-core",
  "merkle",
+ "observability",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -1274,6 +1275,7 @@ name = "ingest"
 version = "0.1.0"
 dependencies = [
  "ledger-core",
+ "observability",
  "prost",
  "tempfile",
  "thiserror 2.0.20",
@@ -1522,6 +1524,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "observability"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -2264,6 +2273,20 @@ checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
 dependencies = [
  "errno",
  "libc",
+]
+
+[[package]]
+name = "simulator"
+version = "0.1.0"
+dependencies = [
+ "ledger-core",
+ "observability",
+ "rand 0.8.8",
+ "rand_chacha 0.3.1",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.20",
+ "wal",
 ]
 
 [[package]]

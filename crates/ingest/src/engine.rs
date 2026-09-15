@@ -93,6 +93,7 @@ pub struct Engine {
     wal: Wal,
     receiver: tokio::sync::mpsc::Receiver<IngestCommand>,
     config: EngineConfig,
+    metrics: observability::LedgerMetrics,
 }
 
 impl Engine {
@@ -111,8 +112,16 @@ impl Engine {
             wal,
             receiver,
             config,
+            metrics: observability::LedgerMetrics::new(),
         };
         (engine, queue)
+    }
+
+    /// Attaches a shared telemetry metrics instance to the engine.
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: observability::LedgerMetrics) -> Self {
+        self.metrics = metrics;
+        self
     }
 
     /// Run the single-writer accumulator loop until all senders disconnect.
@@ -158,6 +167,11 @@ impl Engine {
         if batch.is_empty() {
             return Ok(());
         }
+
+        let start_time = std::time::Instant::now();
+        let batch_len = batch.len();
+        self.metrics.batch_size.observe(batch_len as f64);
+        self.metrics.transfers_received.inc_by(batch_len as u64);
 
         let mut watermark = self.ledger.last_timestamp();
         let mut tx_ops: Vec<Vec<BatchOp>> = Vec::new();
@@ -212,8 +226,13 @@ impl Engine {
             }
         }
 
-        for (resp, err) in early_errors {
-            resp.respond_err(err);
+        if !early_errors.is_empty() {
+            self.metrics
+                .transfers_rejected
+                .inc_by(early_errors.len() as u64);
+            for (resp, err) in early_errors {
+                resp.respond_err(err);
+            }
         }
 
         if !tx_ops.is_empty() {
@@ -228,6 +247,7 @@ impl Engine {
                         successful_event_batches.push(events);
                     }
                     Err(err) => {
+                        self.metrics.transfers_rejected.inc();
                         resp.respond_err(IngestError::Ledger(err));
                     }
                 }
@@ -235,8 +255,10 @@ impl Engine {
 
             if !successful_event_batches.is_empty() {
                 let mut payloads = Vec::with_capacity(successful_event_batches.len());
+                let mut total_bytes = 0usize;
                 for events in &successful_event_batches {
                     let payload = ledger_core::codec::encode_events(events)?;
+                    total_bytes += payload.len();
                     payloads.push(payload);
                 }
 
@@ -249,8 +271,14 @@ impl Engine {
                     return Err(ingest_err);
                 }
 
+                self.metrics
+                    .wal_records_appended
+                    .inc_by(payloads.len() as u64);
+                self.metrics.wal_bytes_written.inc_by(total_bytes as u64);
+
                 let all_events: Vec<LedgerEvent> =
                     successful_event_batches.into_iter().flatten().collect();
+                let event_count = all_events.len() as u64;
                 if let Err(ledger_err) = self.ledger.commit_events(&all_events) {
                     let ingest_err = IngestError::Ledger(ledger_err);
                     for resp in successful_responders {
@@ -259,11 +287,17 @@ impl Engine {
                     return Err(ingest_err);
                 }
 
+                self.metrics.transfers_committed.inc_by(event_count);
+
                 for resp in successful_responders {
                     resp.respond_ok(&self.ledger);
                 }
             }
         }
+
+        self.metrics
+            .batch_duration_seconds
+            .observe_duration(start_time.elapsed());
 
         for query in queries {
             match query {
