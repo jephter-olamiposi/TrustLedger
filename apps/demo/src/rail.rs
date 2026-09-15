@@ -111,7 +111,7 @@ impl SolanaUsdcRail {
         let mut sys_data = vec![];
         let default_owner = Pubkey::default();
 
-        let init_ix = initialize(program_id, authority, Pubkey::default());
+        let init_ix = initialize(program_id, authority, Pubkey::default())?;
         let account_infos = vec![
             AccountInfo::new(
                 &authority,
@@ -236,7 +236,7 @@ impl SettlementRail for SolanaUsdcRail {
         };
 
         let commit_ix =
-            commit_settlement(self.program_id, self.authority, params, Pubkey::default());
+            commit_settlement(self.program_id, self.authority, params, Pubkey::default())?;
 
         let mut auth_lamports = 10_000_000u64;
         let mut pda_lamports = 1_000_000u64;

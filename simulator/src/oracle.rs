@@ -88,9 +88,15 @@ impl Oracle {
             }
             let posted = credits - debits;
 
-            total_wealth = total_wealth
-                .checked_add(posted)
-                .expect("u128 wealth overflow impossible under simulation bounds");
+            let Some(next_wealth) = total_wealth.checked_add(posted) else {
+                return Err(OracleViolation::WealthLeak {
+                    node_id,
+                    expected: expected_supply,
+                    actual: u128::MAX,
+                    drift: i128::MAX,
+                });
+            };
+            total_wealth = next_wealth;
         }
 
         if total_wealth != expected_supply {
@@ -117,9 +123,8 @@ impl Oracle {
         node_b: u64,
         events_b: &[LedgerEvent],
     ) -> Result<(), OracleViolation> {
-        let common_len = events_a.len().min(events_b.len());
-        for i in 0..common_len {
-            if events_a[i] != events_b[i] {
+        for (i, (ev_a, ev_b)) in events_a.iter().zip(events_b.iter()).enumerate() {
+            if ev_a != ev_b {
                 return Err(OracleViolation::SplitBrain {
                     node_a,
                     node_b,

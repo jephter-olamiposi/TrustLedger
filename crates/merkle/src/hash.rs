@@ -186,16 +186,13 @@ pub fn combine_peaks(left_peak: &Hash32, right_peak: &Hash32) -> Hash32 {
 ///   `acc = combine_peaks(peaks[n-2], peaks[n-1])`, continuing up to `peaks[0]`.
 #[must_use]
 pub fn bag_peaks(peaks: &[Hash32]) -> Hash32 {
-    match peaks.len() {
-        0 => Hash32::ZERO,
-        1 => peaks[0],
-        len => {
-            // Fold right-to-left: the smallest mountain on the right merges into its left neighbor.
-            let mut acc = peaks[len - 1];
-            for peak in peaks[..len - 1].iter().rev() {
-                acc = combine_peaks(peak, &acc);
-            }
-            acc
-        }
+    let mut iter = peaks.iter().rev();
+    let Some(first) = iter.next() else {
+        return Hash32::ZERO;
+    };
+    let mut acc = *first;
+    for peak in iter {
+        acc = combine_peaks(peak, &acc);
     }
+    acc
 }

@@ -82,8 +82,15 @@ impl SettlementInstruction {
 }
 
 /// Build an [`Instruction`] to initialize the settlement root PDA.
-#[must_use]
-pub fn initialize(program_id: Pubkey, authority: Pubkey, system_program: Pubkey) -> Instruction {
+///
+/// # Errors
+///
+/// Returns [`SettlementProgramError::SerializationError`] if instruction packing fails.
+pub fn initialize(
+    program_id: Pubkey,
+    authority: Pubkey,
+    system_program: Pubkey,
+) -> Result<Instruction, SettlementProgramError> {
     let (pda, bump) = SettlementRoot::find_pda(&authority, &program_id);
 
     let accounts = vec![
@@ -92,25 +99,26 @@ pub fn initialize(program_id: Pubkey, authority: Pubkey, system_program: Pubkey)
         AccountMeta::new_readonly(system_program, false),
     ];
 
-    let instruction_data = SettlementInstruction::Initialize { bump }
-        .pack()
-        .expect("Borsh packing infallible for fixed enum");
+    let instruction_data = SettlementInstruction::Initialize { bump }.pack()?;
 
-    Instruction {
+    Ok(Instruction {
         program_id,
         accounts,
         data: instruction_data,
-    }
+    })
 }
 
 /// Build an [`Instruction`] to commit a new settlement batch root.
-#[must_use]
+///
+/// # Errors
+///
+/// Returns [`SettlementProgramError::SerializationError`] if instruction packing fails.
 pub fn commit_settlement(
     program_id: Pubkey,
     authority: Pubkey,
     params: CommitParams,
     clock_sysvar: Pubkey,
-) -> Instruction {
+) -> Result<Instruction, SettlementProgramError> {
     let (pda, _) = SettlementRoot::find_pda(&authority, &program_id);
 
     let accounts = vec![
@@ -119,25 +127,26 @@ pub fn commit_settlement(
         AccountMeta::new_readonly(clock_sysvar, false),
     ];
 
-    let instruction_data = SettlementInstruction::CommitSettlement(params)
-        .pack()
-        .expect("Borsh packing infallible");
+    let instruction_data = SettlementInstruction::CommitSettlement(params).pack()?;
 
-    Instruction {
+    Ok(Instruction {
         program_id,
         accounts,
         data: instruction_data,
-    }
+    })
 }
 
 /// Build an [`Instruction`] to verify an inclusion proof on-chain against the PDA root.
-#[must_use]
+///
+/// # Errors
+///
+/// Returns [`SettlementProgramError::SerializationError`] if instruction packing fails.
 pub fn verify_inclusion(
     program_id: Pubkey,
     authority: Pubkey,
     leaf_hash: [u8; 32],
     proof_bytes: Vec<u8>,
-) -> Instruction {
+) -> Result<Instruction, SettlementProgramError> {
     let (pda, _) = SettlementRoot::find_pda(&authority, &program_id);
 
     let accounts = vec![AccountMeta::new_readonly(pda, false)];
@@ -146,12 +155,11 @@ pub fn verify_inclusion(
         leaf_hash,
         proof_bytes,
     }
-    .pack()
-    .expect("Borsh packing infallible");
+    .pack()?;
 
-    Instruction {
+    Ok(Instruction {
         program_id,
         accounts,
         data: instruction_data,
-    }
+    })
 }

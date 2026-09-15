@@ -81,7 +81,7 @@ fn test_settlement_lifecycle_and_invariants() {
     let sys_data = vec![];
 
     // 1. Initialize
-    let init_ix = initialize(program_id, authority, system_program);
+    let init_ix = initialize(program_id, authority, system_program).expect("init ix");
     let mut accounts = vec![
         MockAccount::new(
             authority,
@@ -122,7 +122,8 @@ fn test_settlement_lifecycle_and_invariants() {
         total_settled_amount: 100_000,
         chain_tip: tip1,
     };
-    let commit1_ix = commit_settlement(program_id, authority, commit1_params, clock_sysvar);
+    let commit1_ix =
+        commit_settlement(program_id, authority, commit1_params, clock_sysvar).expect("commit ix");
     let mut accounts = vec![
         MockAccount::new(
             authority,
@@ -153,7 +154,8 @@ fn test_settlement_lifecycle_and_invariants() {
         total_settled_amount: 500,
         chain_tip: [0xbb; 32],
     };
-    let commit_bad_ix = commit_settlement(program_id, authority, commit_bad_seq, clock_sysvar);
+    let commit_bad_ix = commit_settlement(program_id, authority, commit_bad_seq, clock_sysvar)
+        .expect("commit bad seq ix");
     let mut accounts = vec![
         MockAccount::new(
             authority,
@@ -178,7 +180,8 @@ fn test_settlement_lifecycle_and_invariants() {
         chain_tip: [0xbb; 32],
     };
     let commit_bad_prev_ix =
-        commit_settlement(program_id, authority, commit_bad_prev, clock_sysvar);
+        commit_settlement(program_id, authority, commit_bad_prev, clock_sysvar)
+            .expect("commit bad prev ix");
     let mut accounts = vec![
         MockAccount::new(
             authority,
@@ -203,7 +206,8 @@ fn test_settlement_lifecycle_and_invariants() {
         total_settled_amount: 50_000,
         chain_tip: [0xcc; 32],
     };
-    let commit2_ix = commit_settlement(program_id, authority, commit2_params, clock_sysvar);
+    let commit2_ix = commit_settlement(program_id, authority, commit2_params, clock_sysvar)
+        .expect("commit 2 ix");
     let mut accounts = vec![
         MockAccount::new(
             authority,
@@ -282,7 +286,8 @@ fn test_on_chain_merkle_proof_verification() {
         authority,
         *target_leaf_hash.as_bytes(),
         proof_bytes.clone(),
-    );
+    )
+    .expect("verify ix");
     let mut accounts = vec![MockAccount::new(
         pda,
         false,
@@ -296,7 +301,8 @@ fn test_on_chain_merkle_proof_verification() {
     // 2. Reject tampered leaf hash on-chain
     let mut forged_leaf = *target_leaf_hash.as_bytes();
     forged_leaf[0] ^= 0xff;
-    let bad_verify_ix = verify_inclusion(program_id, authority, forged_leaf, proof_bytes);
+    let bad_verify_ix =
+        verify_inclusion(program_id, authority, forged_leaf, proof_bytes).expect("bad verify ix");
     let mut accounts = vec![MockAccount::new(
         pda,
         false,

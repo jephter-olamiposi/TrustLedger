@@ -69,8 +69,11 @@ impl SimDisk {
 
         if torn_write && !self.buffered.is_empty() {
             // Persist a random non-empty prefix of the uncommitted buffer, truncating the frame.
-            let torn_len = rng.gen_range(1..self.buffered.len() as u64) as usize;
-            self.flushed.extend_from_slice(&self.buffered[..torn_len]);
+            let max_range = (self.buffered.len() as u64).max(2);
+            let torn_len = (rng.gen_range(1..max_range) as usize).min(self.buffered.len());
+            if let Some(prefix) = self.buffered.get(..torn_len) {
+                self.flushed.extend_from_slice(prefix);
+            }
         }
 
         // Invariant: all volatile memory in OS cache is vaporized on sudden power cut.

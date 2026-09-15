@@ -37,9 +37,13 @@ pub struct WebhookVerifier;
 
 impl WebhookVerifier {
     /// Compute the expected HMAC-SHA256 hex signature for a raw payload.
-    #[must_use]
-    pub fn compute_signature(secret: &[u8], payload: &[u8]) -> String {
-        let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC can take key of any size");
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WebhookError::InvalidSignature`] if the secret key cannot initialize the HMAC.
+    pub fn compute_signature(secret: &[u8], payload: &[u8]) -> Result<String, WebhookError> {
+        let mut mac =
+            HmacSha256::new_from_slice(secret).map_err(|_| WebhookError::InvalidSignature)?;
         mac.update(payload);
         let result = mac.finalize().into_bytes();
         let mut hex = String::with_capacity(64);
@@ -47,7 +51,7 @@ impl WebhookVerifier {
             use std::fmt::Write;
             let _ = write!(hex, "{byte:02x}");
         }
-        hex
+        Ok(hex)
     }
 
     /// Verify that `signature_hex` matches the HMAC-SHA256 of `payload` using constant-time check.
@@ -100,9 +104,9 @@ fn decode_hex(s: &str) -> Option<Vec<u8>> {
     }
     let mut bytes = Vec::with_capacity(s.len() / 2);
     let chars = s.as_bytes();
-    for i in (0..chars.len()).step_by(2) {
-        let hi = decode_nibble(chars[i])?;
-        let lo = decode_nibble(chars[i + 1])?;
+    for chunk in chars.chunks_exact(2) {
+        let hi = decode_nibble(chunk[0])?;
+        let lo = decode_nibble(chunk[1])?;
         bytes.push((hi << 4) | lo);
     }
     Some(bytes)

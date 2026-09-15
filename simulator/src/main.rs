@@ -4,7 +4,7 @@
 //! proving financial wealth conservation and consensus linearizability.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
+#![deny(missing_docs)]
 
 use std::env;
 use std::process::ExitCode;
@@ -18,9 +18,9 @@ fn print_usage() {
          Options:\n\
          \x20 --seed <u64>         Deterministic PRNG seed (default: 42)\n\
          \x20 --steps <u64>        Maximum simulated virtual ticks (default: 200)\n\
-         \x20 --scenario <name>    Scenario to run: partition, crash, soak, all (default: all)\n\
-         \x20 --fuzz <count>       Run fuzz iterations across consecutive seeds\n\
-         \x20 --help               Display this help text"
+         \x20 --scenario <name>    Scenario to run: partition | crash | chaos | all (default: all)\n\
+         \x20 --fuzz <count>       Run fuzz campaign across N consecutive seeds\n\
+         \x20 --help, -h           Show this help message"
     );
 }
 
@@ -33,10 +33,13 @@ fn main() -> ExitCode {
 
     let mut i = 1;
     while i < args.len() {
-        match args[i].as_str() {
+        let Some(current_arg) = args.get(i) else {
+            break;
+        };
+        match current_arg.as_str() {
             "--seed" => {
-                if i + 1 < args.len() {
-                    seed = args[i + 1].parse().unwrap_or(42);
+                if let Some(val) = args.get(i + 1) {
+                    seed = val.parse().unwrap_or(42);
                     i += 2;
                 } else {
                     print_usage();
@@ -44,8 +47,8 @@ fn main() -> ExitCode {
                 }
             }
             "--steps" => {
-                if i + 1 < args.len() {
-                    steps = args[i + 1].parse().unwrap_or(200);
+                if let Some(val) = args.get(i + 1) {
+                    steps = val.parse().unwrap_or(200);
                     i += 2;
                 } else {
                     print_usage();
@@ -53,8 +56,8 @@ fn main() -> ExitCode {
                 }
             }
             "--scenario" => {
-                if i + 1 < args.len() {
-                    scenario_arg = args[i + 1].clone();
+                if let Some(val) = args.get(i + 1) {
+                    scenario_arg = val.clone();
                     i += 2;
                 } else {
                     print_usage();
@@ -62,8 +65,8 @@ fn main() -> ExitCode {
                 }
             }
             "--fuzz" => {
-                if i + 1 < args.len() {
-                    fuzz_count = Some(args[i + 1].parse().unwrap_or(20));
+                if let Some(val) = args.get(i + 1) {
+                    fuzz_count = Some(val.parse().unwrap_or(20));
                     i += 2;
                 } else {
                     print_usage();
@@ -75,7 +78,7 @@ fn main() -> ExitCode {
                 return ExitCode::SUCCESS;
             }
             _ => {
-                eprintln!("Unknown option: {}", args[i]);
+                eprintln!("Unknown option: {current_arg}");
                 print_usage();
                 return ExitCode::FAILURE;
             }

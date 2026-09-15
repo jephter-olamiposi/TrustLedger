@@ -74,57 +74,55 @@ impl WorkloadGenerator {
         // If pending holds exist, resolve some of them (70% capture, 30% void)
         if !self.active_holds.is_empty() && rng.gen_bool(0.35) {
             let keys: Vec<u128> = self.active_holds.keys().copied().collect();
-            let pending_id = *rng.choose(&keys).expect("non-empty active holds verified");
-            let (_from, _to, amount) = self
-                .active_holds
-                .remove(&pending_id)
-                .expect("verified key exists");
+            if let Some(&pending_id) = rng.choose(&keys) {
+                if let Some((_from, _to, amount)) = self.active_holds.remove(&pending_id) {
+                    self.next_transfer_id = self.next_transfer_id.saturating_add(1);
+                    let next_id = u128::from(self.next_transfer_id);
 
-            self.next_transfer_id = self.next_transfer_id.saturating_add(1);
-            let next_id = u128::from(self.next_transfer_id);
+                    if rng.gen_bool(0.75) {
+                        return WorkloadOp::PostPending {
+                            pending_id,
+                            post_id: next_id,
+                            amount,
+                        };
+                    }
+                    return WorkloadOp::VoidPending {
+                        pending_id,
+                        void_id: next_id,
+                    };
+                }
+            }
+        }
 
-            if rng.gen_bool(0.75) {
-                WorkloadOp::PostPending {
-                    pending_id,
-                    post_id: next_id,
-                    amount,
-                }
-            } else {
-                WorkloadOp::VoidPending {
-                    pending_id,
-                    void_id: next_id,
-                }
+        // Pick two distinct accounts
+        let num_accounts = self.accounts.len().max(2);
+        let from_idx = (rng.gen_range(0..self.accounts.len() as u64) as usize) % num_accounts;
+        let mut to_idx = (rng.gen_range(0..self.accounts.len() as u64) as usize) % num_accounts;
+        while to_idx == from_idx && self.accounts.len() > 1 {
+            to_idx = (rng.gen_range(0..self.accounts.len() as u64) as usize) % num_accounts;
+        }
+
+        let from = self.accounts.get(from_idx).copied().unwrap_or(0);
+        let to = self.accounts.get(to_idx).copied().unwrap_or(1);
+        let amount = u128::from(rng.gen_range(10..=500));
+
+        self.next_transfer_id = self.next_transfer_id.saturating_add(1);
+        let transfer_id = u128::from(self.next_transfer_id);
+
+        if rng.gen_bool(0.50) {
+            self.active_holds.insert(transfer_id, (from, to, amount));
+            WorkloadOp::CreatePending {
+                transfer_id,
+                from,
+                to,
+                amount,
             }
         } else {
-            // Pick two distinct accounts
-            let from_idx = rng.gen_range(0..self.accounts.len() as u64) as usize;
-            let mut to_idx = rng.gen_range(0..self.accounts.len() as u64) as usize;
-            while to_idx == from_idx && self.accounts.len() > 1 {
-                to_idx = rng.gen_range(0..self.accounts.len() as u64) as usize;
-            }
-
-            let from = self.accounts[from_idx];
-            let to = self.accounts[to_idx];
-            let amount = u128::from(rng.gen_range(10..=500));
-
-            self.next_transfer_id = self.next_transfer_id.saturating_add(1);
-            let transfer_id = u128::from(self.next_transfer_id);
-
-            if rng.gen_bool(0.50) {
-                self.active_holds.insert(transfer_id, (from, to, amount));
-                WorkloadOp::CreatePending {
-                    transfer_id,
-                    from,
-                    to,
-                    amount,
-                }
-            } else {
-                WorkloadOp::DirectTransfer {
-                    transfer_id,
-                    from,
-                    to,
-                    amount,
-                }
+            WorkloadOp::DirectTransfer {
+                transfer_id,
+                from,
+                to,
+                amount,
             }
         }
     }

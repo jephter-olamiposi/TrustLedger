@@ -119,7 +119,13 @@ impl MmrProof {
         }
 
         // Verify the candidate peak matches the peak recorded in the proof.
-        let expected_peak = self.peaks[peak_idx];
+        let Some(&expected_peak) = self.peaks.get(peak_idx) else {
+            return Err(ProofError::PeakMismatch {
+                expected: String::new(),
+                computed: curr.to_hex(),
+                peak_index: peak_idx,
+            });
+        };
         if curr != expected_peak {
             return Err(ProofError::PeakMismatch {
                 expected: expected_peak.to_hex(),

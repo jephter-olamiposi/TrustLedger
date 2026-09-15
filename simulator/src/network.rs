@@ -138,7 +138,9 @@ impl<T: Clone + Ord> SimNetwork<T> {
 
         while let Some(event) = self.queue.peek() {
             if event.execute_at.ticks() <= now.ticks() {
-                let event = self.queue.pop().expect("peek verified non-empty");
+                let Some(event) = self.queue.pop() else {
+                    break;
+                };
                 // Verify partition hasn't severed the link between scheduling and arrival
                 if self.can_communicate(event.payload.from, event.payload.to) {
                     self.packets_delivered = self.packets_delivered.saturating_add(1);

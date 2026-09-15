@@ -258,9 +258,7 @@ impl SimCluster {
     ) -> Self {
         let scale = Scale::usdc();
         let accounts: Vec<AccountId> = account_ids.iter().copied().map(AccountId::new).collect();
-        let total_wealth = balance_per_account
-            .checked_mul(account_ids.len() as u128)
-            .expect("wealth overflow");
+        let total_wealth = balance_per_account.saturating_mul(account_ids.len() as u128);
 
         let mut nodes = BTreeMap::new();
         for id in 1..=3 {
@@ -289,7 +287,7 @@ impl SimCluster {
 
         self.next_log_index = self.next_log_index.saturating_add(1);
         let index = self.next_log_index;
-        let term = self.nodes.get(&leader_id).expect("node exists").term;
+        let term = self.nodes.get(&leader_id).map_or(0, |n| n.term);
 
         // Leader records self-ack
         if let Some(leader) = self.nodes.get_mut(&leader_id) {

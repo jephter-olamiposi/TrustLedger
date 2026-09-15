@@ -10,7 +10,7 @@
 //! - Invariant checking oracle enforcing total wealth conservation and log agreement (`Oracle`).
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
+#![deny(missing_docs)]
 
 pub mod clock;
 pub mod cluster;

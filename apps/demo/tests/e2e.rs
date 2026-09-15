@@ -146,7 +146,8 @@ fn test_webhook_hmac_tamper_and_replay_protection() {
     };
 
     let raw_bytes = serde_json::to_vec(&payload).expect("serialize payload");
-    let valid_signature = WebhookVerifier::compute_signature(secret, &raw_bytes);
+    let valid_signature =
+        WebhookVerifier::compute_signature(secret, &raw_bytes).expect("compute signature");
 
     // 1. Valid signature passes
     assert!(WebhookVerifier::verify_signature(secret, &raw_bytes, &valid_signature).is_ok());

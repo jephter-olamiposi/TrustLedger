@@ -4,7 +4,7 @@
 //! registry producing Prometheus 2.0 text exposition format without external runtime dependencies.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
+#![deny(missing_docs)]
 
 pub mod counter;
 pub mod gauge;
