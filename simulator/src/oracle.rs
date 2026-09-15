@@ -59,7 +59,6 @@ impl Oracle {
         accounts: &[AccountId],
         expected_supply: u128,
     ) -> Result<(), OracleViolation> {
-        // First assert underlying double-entry structural conservation
         if let Err(_e) = ledger.verify_invariants() {
             return Err(OracleViolation::WealthLeak {
                 node_id,

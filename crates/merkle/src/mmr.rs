@@ -190,7 +190,6 @@ impl MerkleMountainRange {
         let mut curr = node_pos;
         let mut siblings = Vec::new();
 
-        // Climb from the leaf to the mountain peak, collecting sibling hashes along the way.
         while let Some(parent_idx) = self.nodes.get(curr).and_then(|n| n.parent) {
             let parent = self.nodes.get(parent_idx).ok_or_else(|| {
                 MmrError::CorruptedTree(format!("missing parent node at index {parent_idx}"))

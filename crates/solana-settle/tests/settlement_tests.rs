@@ -80,7 +80,6 @@ fn test_settlement_lifecycle_and_invariants() {
     let sys_lamports = 1;
     let sys_data = vec![];
 
-    // 1. Initialize
     let init_ix = initialize(program_id, authority, system_program).expect("init ix");
     let mut accounts = vec![
         MockAccount::new(
@@ -110,7 +109,6 @@ fn test_settlement_lifecycle_and_invariants() {
     assert_eq!(root_state.batch_seq, 0);
     assert_eq!(root_state.bump, bump);
 
-    // 2. Commit Batch 1
     let r1 = [0x11u8; 32];
     let tip1 = [0xaa; 32];
     let commit1_params = CommitParams {
@@ -144,7 +142,6 @@ fn test_settlement_lifecycle_and_invariants() {
     assert_eq!(root_state.merkle_root, r1);
     assert_eq!(root_state.total_settled_amount, 100_000);
 
-    // 3. Reject non-sequential batch 3 (should be 2)
     let commit_bad_seq = CommitParams {
         epoch: 1,
         batch_seq: 3, // skipped batch 2!
@@ -169,7 +166,6 @@ fn test_settlement_lifecycle_and_invariants() {
     ];
     assert!(execute_ix(&program_id, &commit_bad_ix, &mut accounts).is_err());
 
-    // 4. Reject broken previous_root hash chain
     let commit_bad_prev = CommitParams {
         epoch: 1,
         batch_seq: 2,
@@ -195,7 +191,6 @@ fn test_settlement_lifecycle_and_invariants() {
     ];
     assert!(execute_ix(&program_id, &commit_bad_prev_ix, &mut accounts).is_err());
 
-    // 5. Commit Batch 2 successfully with proper previous_root
     let r2 = [0x22u8; 32];
     let commit2_params = CommitParams {
         epoch: 1,
@@ -235,7 +230,6 @@ fn test_on_chain_merkle_proof_verification() {
     let authority = Pubkey::new_unique();
     let (pda, bump) = SettlementRoot::find_pda(&authority, &program_id);
 
-    // Build MMR with 5 real transfers
     let mut mmr = MerkleMountainRange::new();
     let mut transfers = Vec::new();
 
@@ -255,7 +249,6 @@ fn test_on_chain_merkle_proof_verification() {
 
     let batch_root = mmr.root();
 
-    // Initialize PDA with this batch committed
     let mut pda_data = vec![0u8; SettlementRoot::LEN];
     let state = SettlementRoot {
         authority,
@@ -273,14 +266,12 @@ fn test_on_chain_merkle_proof_verification() {
         .serialize_into(&mut pda_data)
         .expect("serialize state");
 
-    // Generate proof for transfer index 2 (transfer ID 3)
     let target_idx = 2;
     let target_transfer = &transfers[target_idx];
     let target_leaf_hash = hash_transfer(target_transfer).expect("hash transfer");
     let proof = mmr.generate_proof(target_idx).expect("generate proof");
     let proof_bytes = proof.to_bytes().expect("serialize proof");
 
-    // 1. Verify valid proof on-chain
     let verify_ix = verify_inclusion(
         program_id,
         authority,
@@ -298,7 +289,6 @@ fn test_on_chain_merkle_proof_verification() {
     )];
     assert!(execute_ix(&program_id, &verify_ix, &mut accounts).is_ok());
 
-    // 2. Reject tampered leaf hash on-chain
     let mut forged_leaf = *target_leaf_hash.as_bytes();
     forged_leaf[0] ^= 0xff;
     let bad_verify_ix =
@@ -386,7 +376,6 @@ fn test_verifier_binary_cli_execution() {
         .save_to_file(&valid_receipt_path)
         .expect("save receipt");
 
-    // Run CLI on valid receipt
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_verifier"))
         .arg("--receipt")
         .arg(&valid_receipt_path)
@@ -397,7 +386,6 @@ fn test_verifier_binary_cli_execution() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("[VERIFIED]"));
 
-    // Run CLI on tampered receipt
     let mut tampered = receipt;
     tampered.merkle_root = "00".repeat(32);
     let tampered_receipt_path = temp_dir.path().join("tampered_receipt.json");

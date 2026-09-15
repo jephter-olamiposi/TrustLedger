@@ -110,14 +110,12 @@ impl RaftLogStorage<TypeConfig> for MemLogStore {
         for entry in entries {
             inner.entries.insert(entry.log_id.index, entry);
         }
-        // Notify Raft that write was successfully flushed
         callback.log_io_completed(Ok(()));
         Ok(())
     }
 
     async fn truncate(&mut self, log_id: LogId<u64>) -> Result<(), StorageError<u64>> {
         let mut inner = self.inner.write().await;
-        // Drop any uncommitted entries at and after log_id.index
         inner.entries.split_off(&log_id.index);
         Ok(())
     }

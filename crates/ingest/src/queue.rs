@@ -53,6 +53,7 @@ pub(crate) enum IngestOp {
 }
 
 impl IngestOp {
+    /// Returns the target entity identifier affected by this operation.
     #[must_use]
     pub(crate) fn target(&self) -> TargetEntity {
         match self {
@@ -67,6 +68,13 @@ impl IngestOp {
         }
     }
 
+    /// Converts this queue ingress operation into an executable ledger [`BatchOp`].
+    ///
+    /// Monotonically advances the timestamp watermark to ensure sequential causality.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IngestError::Ledger`] if transfer validation fails (e.g. zero amount or identical debit/credit accounts).
     pub(crate) fn into_batch_op(self, watermark: &mut u64) -> Result<BatchOp, IngestError> {
         match self {
             Self::CreateAccount {
@@ -190,11 +198,19 @@ pub struct IngestQueue {
 }
 
 impl IngestQueue {
+    /// Creates a new `IngestQueue` backed by the provided mpsc channel sender.
     #[must_use]
     pub(crate) fn new(sender: tokio::sync::mpsc::Sender<IngestCommand>) -> Self {
         Self { sender }
     }
 
+    /// Submits an ingress command to the background batch processing engine.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IngestError::QueueSaturated`] if the bounded queue is at full capacity,
+    /// providing instantaneous backpressure to callers.
+    /// Returns [`IngestError::ChannelClosed`] if the background engine worker has shut down.
     pub(crate) fn submit(&self, command: IngestCommand) -> Result<(), IngestError> {
         self.sender.try_send(command).map_err(|err| match err {
             tokio::sync::mpsc::error::TrySendError::Full(_) => IngestError::QueueSaturated,

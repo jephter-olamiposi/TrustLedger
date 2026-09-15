@@ -403,6 +403,11 @@ impl Ledger {
     /// At the conclusion of this method, all speculative changes are rolled back to the ledger's
     /// pre-call state. The caller is responsible for persisting all produced events to the
     /// write-ahead log before applying them permanently via [`Self::commit_events`].
+    ///
+    /// # Errors
+    ///
+    /// Individual transaction results contain [`LedgerError`] if an operation within that
+    /// transaction fails domain validation, insufficient balance limits, or account invariants.
     pub fn prepare_transactions(
         &mut self,
         txs: &[Vec<BatchOp>],
@@ -457,6 +462,11 @@ impl Ledger {
     /// At the conclusion of this method, all speculative changes are rolled back to the ledger's
     /// pre-call state. The caller is responsible for persisting all produced events to the
     /// write-ahead log before applying them permanently via [`Self::commit_events`].
+    ///
+    /// # Errors
+    ///
+    /// Individual entries in the returned vector contain [`LedgerError`] if an operation fails
+    /// domain validation, overdraft checks, scale mismatches, or state transition invariants.
     pub fn prepare_batch_results(
         &mut self,
         ops: &[BatchOp],

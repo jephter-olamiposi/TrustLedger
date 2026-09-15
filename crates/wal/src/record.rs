@@ -238,6 +238,10 @@ pub fn encode(seq: u64, payload: &[u8], max_payload_len: usize) -> Result<Vec<u8
 
 /// Encode a frame for consumers that share the wal layout but need their own
 /// magic (the checkpoint snapshot).
+///
+/// # Errors
+///
+/// Returns [`WalError::PayloadTooLarge`] if `payload.len()` exceeds `max_payload_len`.
 pub(crate) fn encode_frame(
     magic: u32,
     version: u8,
@@ -251,6 +255,10 @@ pub(crate) fn encode_frame(
 }
 
 /// Append a frame into `dest` for consumers that share the wal layout but need their own magic.
+///
+/// # Errors
+///
+/// Returns [`WalError::PayloadTooLarge`] if `payload.len()` exceeds `max_payload_len`.
 pub(crate) fn encode_frame_append(
     magic: u32,
     version: u8,
@@ -287,6 +295,10 @@ pub(crate) fn encode_frame_append(
 }
 
 /// Encode a frame into `dest` for consumers that share the wal layout but need their own magic.
+///
+/// # Errors
+///
+/// Returns [`WalError::PayloadTooLarge`] if `payload.len()` exceeds `max_payload_len`.
 pub(crate) fn encode_frame_into(
     magic: u32,
     version: u8,
@@ -313,6 +325,12 @@ pub fn decode_frame(frame: &[u8], max_payload_len: usize) -> Result<(u64, usize)
 
 /// Decode a frame using an explicit magic and version, for consumers that
 /// share the layout but use their own magic.
+///
+/// # Errors
+///
+/// Returns [`WalError::InvalidHeader`] if the frame is shorter than minimum header overhead,
+/// has invalid magic or version bytes, or declares a payload exceeding `max_payload_len`.
+/// Returns [`WalError::ChecksumMismatch`] if the CRC32C trailer does not match frame content.
 pub(crate) fn decode_frame_with(
     magic: u32,
     version: u8,

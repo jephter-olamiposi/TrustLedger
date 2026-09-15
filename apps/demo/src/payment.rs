@@ -175,7 +175,6 @@ impl AccountDirectory {
         initial_customer_deposit: u128,
         timestamp: u64,
     ) -> Result<(), PaymentError> {
-        // Vault asset account
         ledger.create_account(
             Self::VAULT_ASSET,
             AccountType::Asset,
@@ -184,7 +183,6 @@ impl AccountDirectory {
             timestamp,
         )?;
 
-        // Fee revenue account
         ledger.create_account(
             Self::FEE_REVENUE,
             AccountType::Revenue,
@@ -193,7 +191,6 @@ impl AccountDirectory {
             timestamp,
         )?;
 
-        // Setup merchants
         for &m_id in merchants {
             ledger.create_account(
                 Self::merchant(m_id),
@@ -204,7 +201,6 @@ impl AccountDirectory {
             )?;
         }
 
-        // Setup customers and seed initial deposits from vault
         for (i, &c_id) in customers.iter().enumerate() {
             let acc_id = Self::customer(c_id);
             ledger.create_account(

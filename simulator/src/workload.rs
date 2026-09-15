@@ -71,7 +71,6 @@ impl WorkloadGenerator {
 
     /// Generates the next pseudo-random financial operation according to realistic fintech ratios.
     pub fn next_op(&mut self, rng: &mut SimRng) -> WorkloadOp {
-        // If pending holds exist, resolve some of them (70% capture, 30% void)
         if !self.active_holds.is_empty() && rng.gen_bool(0.35) {
             let keys: Vec<u128> = self.active_holds.keys().copied().collect();
             if let Some(&pending_id) = rng.choose(&keys) {
@@ -94,7 +93,6 @@ impl WorkloadGenerator {
             }
         }
 
-        // Pick two distinct accounts
         let num_accounts = self.accounts.len().max(2);
         let from_idx = (rng.gen_range(0..self.accounts.len() as u64) as usize) % num_accounts;
         let mut to_idx = (rng.gen_range(0..self.accounts.len() as u64) as usize) % num_accounts;

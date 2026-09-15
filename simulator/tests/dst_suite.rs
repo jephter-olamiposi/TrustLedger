@@ -10,15 +10,12 @@ fn test_deterministic_reproducibility() {
     let seed = 0xABCD_EF01_2345_6789;
     let ticks = 150;
 
-    // Run 1
     let rep1 = ScenarioRunner::run(ScenarioType::NetworkPartition, seed, ticks)
         .expect("Run 1 must pass invariants");
 
-    // Run 2 with identical seed
     let rep2 = ScenarioRunner::run(ScenarioType::NetworkPartition, seed, ticks)
         .expect("Run 2 must pass invariants");
 
-    // Assert absolute determinism
     assert_eq!(rep1.total_ticks, rep2.total_ticks);
     assert_eq!(rep1.ops_proposed, rep2.ops_proposed);
     assert_eq!(rep1.ops_committed, rep2.ops_committed);

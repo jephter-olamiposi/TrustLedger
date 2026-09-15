@@ -10,14 +10,12 @@ async fn test_three_node_cluster_bootstrap_and_replication() {
         .await
         .expect("cluster should bootstrap");
 
-    // Wait for cluster leader election
     let leader_id = cluster
         .wait_for_leader(Duration::from_secs(3))
         .await
         .expect("cluster must elect a leader");
     assert!((1..=3).contains(&leader_id));
 
-    // 1. Create two accounts on the leader
     let acc1_id = AccountId::new(101);
     let acc2_id = AccountId::new(102);
 
@@ -45,7 +43,6 @@ async fn test_three_node_cluster_bootstrap_and_replication() {
         .expect("account 2 creation should commit");
     assert_eq!(res2, RaftResponse::AccountCreated(acc2_id));
 
-    // 2. Propose an immediate transfer
     let transfer_id = TransferId::new(1001);
     let amount = Amount::new(5000); // 50.00
     let transfer =
@@ -57,7 +54,6 @@ async fn test_three_node_cluster_bootstrap_and_replication() {
         .expect("transfer proposal should commit");
     assert_eq!(transfer_res, RaftResponse::TransferCreated(transfer_id));
 
-    // 3. Propose two-phase pending transfer hold and post
     let pending_id = TransferId::new(2001);
     let post_id = TransferId::new(2002);
     let pending_transfer =
@@ -81,10 +77,8 @@ async fn test_three_node_cluster_bootstrap_and_replication() {
         .expect("post pending hold should commit");
     assert_eq!(post_res, RaftResponse::PendingPosted(post_id));
 
-    // Allow followers to apply committed entries
     tokio::time::sleep(Duration::from_millis(150)).await;
 
-    // Verify all 3 nodes have byte-for-byte identical balances and invariants
     for id in 1..=3 {
         let node = cluster.get_node(id).expect("node exists");
         node.read_ledger(|ledger| {
@@ -95,7 +89,6 @@ async fn test_three_node_cluster_bootstrap_and_replication() {
             let acc1 = ledger.get_account(acc1_id).expect("acc1 exists");
             let acc2 = ledger.get_account(acc2_id).expect("acc2 exists");
 
-            // Total debits = 50.00 + 20.00 = 70.00 (raw 7000)
             assert_eq!(acc1.balance.debits_posted.as_u128(), 7000);
             assert_eq!(acc2.balance.credits_posted.as_u128(), 7000);
         })

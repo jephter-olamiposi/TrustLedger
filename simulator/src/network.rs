@@ -94,13 +94,11 @@ impl<T: Clone + Ord> SimNetwork<T> {
     pub fn send(&mut self, from: u64, to: u64, payload: T, now: SimInstant, rng: &mut SimRng) {
         self.packets_sent = self.packets_sent.saturating_add(1);
 
-        // Check topological partition reachability
         if !self.can_communicate(from, to) {
             self.packets_dropped = self.packets_dropped.saturating_add(1);
             return;
         }
 
-        // Check randomized packet loss fault injection
         if rng.gen_bool(self.config.drop_rate) {
             self.packets_dropped = self.packets_dropped.saturating_add(1);
             return;
@@ -120,7 +118,6 @@ impl<T: Clone + Ord> SimNetwork<T> {
             },
         });
 
-        // Check randomized packet duplication fault injection
         if rng.gen_bool(self.config.duplicate_rate) {
             let dup_delay = delay.saturating_add(rng.gen_range(1..=3));
             self.sequence_counter = self.sequence_counter.saturating_add(1);

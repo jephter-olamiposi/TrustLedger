@@ -66,7 +66,6 @@ impl ReconciliationEngine {
         chain_root: Option<&SettlementRoot>,
         timestamp: u64,
     ) -> Result<ReconciliationReport, ReconciliationError> {
-        // 1. Calculate App total from captured payments
         let mut app_total: u128 = 0;
         let mut captured_count = 0;
 
@@ -77,7 +76,7 @@ impl ReconciliationEngine {
             }
         }
 
-        // 2. Calculate Ledger total from merchant liability balances (gross credits)
+        // In double-entry accounting, merchant accounts are liabilities whose gross credits represent settled funds.
         let mut ledger_total: u128 = 0;
         for &m_id in merchants {
             let acc_id = AccountDirectory::merchant(m_id);
@@ -87,10 +86,7 @@ impl ReconciliationEngine {
             ledger_total = ledger_total.saturating_add(acc.balance.credits_posted.as_u128());
         }
 
-        // 3. Calculate Chain total from on-chain PDA state
         let chain_total = chain_root.map(|r| r.total_settled_amount).unwrap_or(0);
-
-        // Compute drift
         let drift: i128 = (ledger_total as i128) - (app_total as i128);
 
         let is_clean = drift == 0 && (chain_root.is_none() || chain_total == ledger_total);

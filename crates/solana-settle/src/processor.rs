@@ -119,8 +119,6 @@ impl Processor {
         let account_info_iter = &mut accounts.iter();
         let authority_info = next_account_info(account_info_iter)?;
         let pda_info = next_account_info(account_info_iter)?;
-
-        // Optional clock account for timestamping
         let clock_info = next_account_info(account_info_iter).ok();
 
         if !authority_info.is_signer {
@@ -134,12 +132,10 @@ impl Processor {
         let mut data = pda_info.try_borrow_mut_data()?;
         let mut current_root = SettlementRoot::deserialize_from(&data)?;
 
-        // Ensure authority matches registered key
         if current_root.authority != *authority_info.key {
             return Err(SettlementProgramError::UnauthorizedSigner.into());
         }
 
-        // Enforce sequential batch numbers
         let expected_seq = current_root.batch_seq + 1;
         if params.batch_seq != expected_seq {
             return Err(SettlementProgramError::InvalidBatchSequence {
@@ -149,7 +145,7 @@ impl Processor {
             .into());
         }
 
-        // Enforce tamper-evident chain of roots (except on the very first batch if previous is empty)
+        // Invariant: enforce tamper-evident hash chaining across consecutive settlement roots.
         if current_root.batch_seq > 0 && params.previous_root != current_root.merkle_root {
             return Err(SettlementProgramError::PreviousRootMismatch {
                 expected: Hash32(current_root.merkle_root).to_hex(),
@@ -158,13 +154,11 @@ impl Processor {
             .into());
         }
 
-        // Get current timestamp if clock sysvar was provided, else fallback to 0
         let timestamp = clock_info
             .and_then(|info| Clock::from_account_info(info).ok())
             .map(|clock| clock.unix_timestamp)
             .unwrap_or(0);
 
-        // Update state
         current_root.epoch = params.epoch;
         current_root.batch_seq = params.batch_seq;
         current_root.merkle_root = params.merkle_root;

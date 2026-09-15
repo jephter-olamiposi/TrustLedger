@@ -42,21 +42,18 @@ impl MetricsRegistry {
     pub fn render_prometheus(&self) -> String {
         let mut out = String::with_capacity(4096);
 
-        // Render counters
         for counter in &self.counters {
             let _ = writeln!(out, "# HELP {} {}", counter.name(), counter.help());
             let _ = writeln!(out, "# TYPE {} counter", counter.name());
             let _ = writeln!(out, "{} {}", counter.name(), counter.get());
         }
 
-        // Render gauges
         for gauge in &self.gauges {
             let _ = writeln!(out, "# HELP {} {}", gauge.name(), gauge.help());
             let _ = writeln!(out, "# TYPE {} gauge", gauge.name());
             let _ = writeln!(out, "{} {}", gauge.name(), gauge.get());
         }
 
-        // Render histograms
         for hist in &self.histograms {
             let _ = writeln!(out, "# HELP {} {}", hist.name(), hist.help());
             let _ = writeln!(out, "# TYPE {} histogram", hist.name());

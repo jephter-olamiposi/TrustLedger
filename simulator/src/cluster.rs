@@ -225,7 +225,6 @@ impl SimNode {
             }
         }
 
-        // Durably sync state modification to simulated disk
         let mut log_bytes = Vec::new();
         log_bytes.extend_from_slice(&timestamp.to_be_bytes());
         self.disk.write(&log_bytes);
@@ -289,14 +288,12 @@ impl SimCluster {
         let index = self.next_log_index;
         let term = self.nodes.get(&leader_id).map_or(0, |n| n.term);
 
-        // Leader records self-ack
         if let Some(leader) = self.nodes.get_mut(&leader_id) {
             let mut acks = BTreeSet::new();
             acks.insert(leader_id);
             leader.uncommitted.insert(index, (op.clone(), acks));
         }
 
-        // Broadcast proposal to peer nodes
         let peer_ids: Vec<u64> = self
             .nodes
             .keys()
@@ -341,7 +338,6 @@ impl SimCluster {
         now: SimInstant,
         rng: &mut SimRng,
     ) {
-        // Drop message if destination node is currently crashed
         let dest_status = self.nodes.get(&to).map(|n| n.status);
         if dest_status != Some(NodeStatus::Active) {
             return;
@@ -406,7 +402,6 @@ impl SimCluster {
                         }
                     }
 
-                    // Broadcast commit for all newly committed sequential items to all peers
                     let peer_ids: Vec<u64> =
                         self.nodes.keys().copied().filter(|&id| id != to).collect();
                     for peer_id in peer_ids {
@@ -564,7 +559,6 @@ impl SimCluster {
         }
         self.network.unisolate(node_id);
 
-        // Send catch-up request to remaining nodes
         let peers: Vec<u64> = self
             .nodes
             .keys()
@@ -597,12 +591,12 @@ impl SimCluster {
             .filter(|n| n.status == NodeStatus::Active)
             .collect();
 
-        // 1. Invariant: Wealth conservation on every active node
+        // Invariant: wealth conservation must strictly hold on every active node.
         for node in &active_nodes {
             Oracle::assert_conservation(node.id, &node.ledger, &self.accounts, self.total_wealth)?;
         }
 
-        // 2. Invariant: Log agreement across all pairs of active nodes
+        // Invariant: log agreement must strictly hold across all pairs of active nodes.
         for i in 0..active_nodes.len() {
             for j in (i + 1)..active_nodes.len() {
                 let events_a = active_nodes[i].ledger.journal();

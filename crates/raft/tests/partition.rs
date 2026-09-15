@@ -41,7 +41,6 @@ async fn test_jepsen_minority_partition_and_healing() {
         .await
         .expect("account 2 created");
 
-    // Seed 1 committed transfer
     let t1 = Transfer::new_immediate(
         TransferId::new(3001),
         acc1_id,
@@ -55,16 +54,13 @@ async fn test_jepsen_minority_partition_and_healing() {
         .await
         .expect("transfer 1 committed");
 
-    // Identify minority and majority partition sets
     let minority = vec![initial_leader];
     let majority: Vec<u64> = (1..=3).filter(|&id| id != initial_leader).collect();
     assert_eq!(majority.len(), 2);
 
-    // INJECT PARTITION: isolate initial leader from majority
     cluster.partition(&minority, &majority).await;
 
-    // Wait for the majority partition to detect heartbeat loss and elect a new leader
-    // (election timeout is 150-300ms, allow up to 2s under heavy test runner load)
+    // Nominal election timeout is 150-300ms; allow up to 2s under heavy test runner load.
     let elect_start = Instant::now();
     let mut new_leader_id = None;
     while elect_start.elapsed() < Duration::from_secs(2) {
@@ -85,7 +81,6 @@ async fn test_jepsen_minority_partition_and_healing() {
     let new_leader_id = new_leader_id.expect("majority partition must elect a new leader");
     assert_ne!(new_leader_id, initial_leader);
 
-    // Commit 3 transfers to the new leader on the majority partition
     let new_leader_node = cluster.get_node(new_leader_id).expect("leader node exists");
 
     for i in 2u64..=4u64 {
@@ -104,10 +99,8 @@ async fn test_jepsen_minority_partition_and_healing() {
             .expect("majority partition must commit writes without minority");
     }
 
-    // HEAL PARTITION: reconnect minority node to majority
     cluster.heal().await;
 
-    // Allow cluster to synchronize and minority to catch up
     let heal_start = Instant::now();
     while heal_start.elapsed() < Duration::from_secs(2) {
         let mut all_caught_up = true;
@@ -132,8 +125,6 @@ async fn test_jepsen_minority_partition_and_healing() {
         sleep(Duration::from_millis(20)).await;
     }
 
-    // Verify all 3 nodes have converged to identical state:
-    // Total transferred: 1000 + (3 * 500) = 2500
     for id in 1..=3 {
         let node = cluster.get_node(id).expect("node exists");
         node.read_ledger(|ledger| {

@@ -83,7 +83,6 @@ impl ScenarioRunner {
             clock.advance(1);
             let now = clock.now();
 
-            // Inject fault: Partition minority node 3 away from majority {1, 2}
             if tick == partition_start {
                 let mut majority = BTreeSet::new();
                 majority.insert(1);
@@ -93,14 +92,11 @@ impl ScenarioRunner {
                 cluster.network.partition(majority, minority);
             }
 
-            // Heal fault: Restore full network connectivity
             if tick == partition_heal {
                 cluster.network.heal();
-                // Minority requests catchup
                 cluster.reboot_node(3, now, &mut rng);
             }
 
-            // Generate transactions regularly
             if tick % 3 == 0 && tick < max_ticks.saturating_sub(20) {
                 let op = workload.next_op(&mut rng);
                 if cluster.propose(op, now, &mut rng) {
@@ -111,13 +107,11 @@ impl ScenarioRunner {
             cluster.step(now, &mut rng);
         }
 
-        // Quiesce: Drain remaining inflight packets
         for _ in 0..20 {
             clock.advance(1);
             cluster.step(clock.now(), &mut rng);
         }
 
-        // Verify all invariants
         cluster.verify_invariants()?;
 
         let ops_committed = cluster
@@ -160,14 +154,11 @@ impl ScenarioRunner {
             clock.advance(1);
             let now = clock.now();
 
-            // Crash leader (node 1) with torn-write fault injection
             if tick == crash_tick {
                 cluster.crash_node(1, true, &mut rng);
-                // Trigger election on node 2 to maintain forward progress
                 cluster.trigger_election(2, now, &mut rng);
             }
 
-            // Reboot node 1 and trigger catch-up synchronization
             if tick == reboot_tick {
                 cluster.reboot_node(1, now, &mut rng);
             }
@@ -182,13 +173,11 @@ impl ScenarioRunner {
             cluster.step(now, &mut rng);
         }
 
-        // Quiesce: Drain remaining inflight packets
         for _ in 0..25 {
             clock.advance(1);
             cluster.step(clock.now(), &mut rng);
         }
 
-        // Verify all invariants
         cluster.verify_invariants()?;
 
         let ops_committed = cluster
@@ -229,12 +218,10 @@ impl ScenarioRunner {
             clock.advance(1);
             let now = clock.now();
 
-            // Periodic chaos injection
             if tick % 50 == 0 {
                 let victim = rng.gen_range(1..=3);
                 cluster.crash_node(victim, true, &mut rng);
             } else if tick % 50 == 25 {
-                // Reboot any crashed node
                 for id in 1..=3 {
                     if cluster.nodes.get(&id).map(|n| n.status)
                         == Some(crate::cluster::NodeStatus::Crashed)
@@ -254,19 +241,16 @@ impl ScenarioRunner {
             cluster.step(now, &mut rng);
         }
 
-        // Final healing phase
         cluster.network.heal();
         for id in 1..=3 {
             cluster.reboot_node(id, clock.now(), &mut rng);
         }
 
-        // Quiesce: Drain remaining inflight packets
         for _ in 0..50 {
             clock.advance(1);
             cluster.step(clock.now(), &mut rng);
         }
 
-        // Verify all invariants
         cluster.verify_invariants()?;
 
         let ops_committed = cluster

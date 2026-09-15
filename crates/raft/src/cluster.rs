@@ -139,7 +139,6 @@ impl RaftCluster {
         let mut retries = 0;
 
         while retries < 10 {
-            // Find current leader
             let leader_id =
                 self.nodes
                     .values()

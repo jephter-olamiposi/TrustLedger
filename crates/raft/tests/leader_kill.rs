@@ -41,7 +41,6 @@ async fn test_leader_kill_and_rapid_failover() {
         .await
         .expect("account 2 created");
 
-    // Commit 1 transfer before killing the leader
     let t1 = Transfer::new_immediate(
         TransferId::new(4001),
         acc1_id,
@@ -55,14 +54,12 @@ async fn test_leader_kill_and_rapid_failover() {
         .await
         .expect("transfer 1 committed");
 
-    // KILL THE LEADER
     let kill_start = Instant::now();
     cluster
         .kill_node(initial_leader)
         .await
         .expect("leader killed");
 
-    // Wait for the remaining 2 nodes to elect a new leader
     let mut new_leader_id = None;
     while kill_start.elapsed() < Duration::from_secs(2) {
         for (&id, node) in cluster.nodes() {
@@ -85,7 +82,6 @@ async fn test_leader_kill_and_rapid_failover() {
         "failover took {failover_duration:?}, must be < 2.0s"
     );
 
-    // Commit 2 additional transfers to the new leader
     let new_leader_node = cluster.get_node(new_leader).expect("new leader exists");
 
     for i in 2u64..=3u64 {
@@ -104,8 +100,6 @@ async fn test_leader_kill_and_rapid_failover() {
             .expect("new leader must commit writes with remaining quorum");
     }
 
-    // Verify both surviving nodes have identical balances and zero lost data
-    // Total transferred: 3000 + (2 * 1000) = 5000
     for (&id, node) in cluster.nodes() {
         node.read_ledger(|ledger| {
             ledger

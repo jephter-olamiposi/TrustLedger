@@ -45,7 +45,6 @@ impl ConsensusNode {
         )
         .await?;
 
-        // Register node handle in the router for incoming message delivery
         router.register(id, raft.clone()).await;
 
         Ok(Self {

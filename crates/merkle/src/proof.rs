@@ -110,15 +110,12 @@ impl MmrProof {
         for (h, sibling) in self.siblings.iter().enumerate() {
             let is_right_child = ((local_index >> h) & 1) == 1;
             if is_right_child {
-                // Sibling is to our left: combine(sibling, curr)
                 curr = combine_nodes(sibling, &curr);
             } else {
-                // Sibling is to our right: combine(curr, sibling)
                 curr = combine_nodes(&curr, sibling);
             }
         }
 
-        // Verify the candidate peak matches the peak recorded in the proof.
         let Some(&expected_peak) = self.peaks.get(peak_idx) else {
             return Err(ProofError::PeakMismatch {
                 expected: String::new(),
@@ -134,7 +131,6 @@ impl MmrProof {
             });
         }
 
-        // Verify that bagging the peaks matches the expected root commitment.
         let computed_root = bag_peaks(&self.peaks);
         if computed_root != *expected_root {
             return Err(ProofError::RootMismatch {

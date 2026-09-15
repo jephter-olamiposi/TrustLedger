@@ -204,7 +204,6 @@ impl SettlementRail for SolanaUsdcRail {
             ));
         }
 
-        // Build incremental Merkle Mountain Range for this batch
         let mut mmr = MerkleMountainRange::new();
         let mut total_amount: u128 = 0;
 
@@ -215,7 +214,6 @@ impl SettlementRail for SolanaUsdcRail {
 
         let root = mmr.root();
 
-        // Commit root to Solana PDA
         let (pda, _) = SettlementRoot::find_pda(&self.authority, &self.program_id);
         let mut pda_data_guard = self
             .pda_data
@@ -269,7 +267,6 @@ impl SettlementRail for SolanaUsdcRail {
         Processor::process(&self.program_id, &account_infos, &commit_ix.data)
             .map_err(|e| RailError::SubmissionFailed(format!("on-chain commit error: {e}")))?;
 
-        // Update stored MMR
         if let Ok(mut mmr_guard) = self.latest_mmr.write() {
             *mmr_guard = mmr;
         }

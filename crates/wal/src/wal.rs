@@ -759,7 +759,6 @@ mod tests {
             let first = stream.next().unwrap().unwrap();
             assert_eq!(first.seq, 0);
             assert_eq!(first.payload, b"rec-0");
-            // Drop stream early halfway through iteration
         }
 
         wal.append(b"rec-5").expect("append after dropped stream");

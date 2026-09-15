@@ -19,10 +19,8 @@ fn test_hex_conversion_roundtrip() {
     let parsed = Hash32::from_hex(&hex).expect("valid hex");
     assert_eq!(parsed, hash);
 
-    // Test invalid length
     assert_eq!(Hash32::from_hex("abcd"), Err(HexError::InvalidLength(4)));
 
-    // Test invalid character
     let bad_hex = "zz".to_string() + &hex[2..];
     match Hash32::from_hex(&bad_hex) {
         Err(HexError::InvalidCharacter {
@@ -103,13 +101,11 @@ fn test_deterministic_transfer_proof() {
     let proof1 = mmr.generate_proof(0).expect("generate proof 1");
     assert!(proof1.verify(&mmr.root(), &t1_hash).is_ok());
 
-    // Proof serialization roundtrip
     let proof_bytes = proof1.to_bytes().expect("serialize proof");
     let deserialized = MmrProof::from_bytes(&proof_bytes).expect("deserialize proof");
     assert_eq!(deserialized, proof1);
     assert!(deserialized.verify(&mmr.root(), &t1_hash).is_ok());
 
-    // Tamper with transfer payload: verification must fail
     let tampered_t1 = Transfer::new_immediate(
         TransferId::new(1),
         AccountId::new(10),
@@ -161,7 +157,6 @@ fn test_multi_leaf_powers_of_two_and_odd() {
         assert_eq!(mmr.leaf_count(), leaf_count);
         let root = mmr.root();
 
-        // Verify proof for every single leaf
         for (i, leaf_hash) in leaf_hashes.iter().enumerate() {
             let proof = mmr.generate_proof(i).expect("proof generation");
             assert!(
@@ -169,7 +164,6 @@ fn test_multi_leaf_powers_of_two_and_odd() {
                 "failed to verify leaf {i} for total count {leaf_count}"
             );
 
-            // Verify that an invalid root rejects
             let fake_root = Hash32::new([0xff; 32]);
             assert!(matches!(
                 proof.verify(&fake_root, leaf_hash),
@@ -191,7 +185,6 @@ fn test_tampered_siblings_rejected() {
 
     assert!(proof.verify(&mmr.root(), &leaf_hash).is_ok());
 
-    // Tamper with sibling
     if !proof.siblings.is_empty() {
         proof.siblings[0].0[0] ^= 0x01;
         assert!(proof.verify(&mmr.root(), &leaf_hash).is_err());
@@ -235,14 +228,10 @@ proptest! {
 
         let root = mmr.root();
 
-        // Check inclusion for a sample of leaves
         for (i, &leaf_hash) in leaves.iter().enumerate() {
             let proof = mmr.generate_proof(i).expect("valid proof");
-
-            // Legitimate proof must verify
             prop_assert!(proof.verify(&root, &leaf_hash).is_ok());
 
-            // Tampered leaf hash must fail
             let mut bad_leaf = leaf_hash;
             bad_leaf.0[0] ^= 1 << tamper_bit;
             prop_assert!(proof.verify(&root, &bad_leaf).is_err());

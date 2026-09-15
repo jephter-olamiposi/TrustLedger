@@ -435,7 +435,6 @@ async fn test_fifo_causality_apply_batch_then_transfer() {
     assert_eq!(xfer.id, 771);
     assert_eq!(xfer.state, TransferState::Posted as i32);
 
-    // Verify account 77 balances
     let acc77 = client
         .get_account(GetAccountRequest { id: 77 })
         .await

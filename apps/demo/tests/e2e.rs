@@ -17,12 +17,10 @@ fn test_payment_lifecycle_two_phase_holds() {
     let secret = b"test-secret-key-12345".to_vec();
     let state = AppState::new(secret).expect("app state init");
 
-    // Merchant 1, Customer 101
     let merchant_id = 1;
     let customer_id = 101;
     let initial_balance = 1_000_000u128; // $1,000.00 seeded
 
-    // 1. Authorize $50.00 (50,000 units)
     let payment_id = state.next_payment_id.fetch_add(1, Ordering::SeqCst) as u128;
     let hold_id = state.next_transfer_id.fetch_add(1, Ordering::SeqCst) as u128;
     let now = 1_700_000_000;
@@ -51,18 +49,15 @@ fn test_payment_lifecycle_two_phase_holds() {
         now,
     );
 
-    // Verify hold reserved customer funds
     {
         let ledger = state.ledger.read().unwrap();
         let cust_acc = ledger
             .get_account(AccountDirectory::customer(customer_id))
             .unwrap();
-        // Credits posted is 1,000,000, debits pending is 50,000
         assert_eq!(cust_acc.balance.credits_posted.as_u128(), initial_balance);
         assert_eq!(cust_acc.balance.debits_pending.as_u128(), 50_000);
     }
 
-    // 2. Capture the payment
     let post_id = state.next_transfer_id.fetch_add(1, Ordering::SeqCst) as u128;
     {
         let mut ledger = state.ledger.write().unwrap();
@@ -80,7 +75,6 @@ fn test_payment_lifecycle_two_phase_holds() {
         .expect("transition to captured");
     assert_eq!(payment.state, PaymentState::Captured);
 
-    // Verify merchant received funds
     {
         let ledger = state.ledger.read().unwrap();
         let merch_acc = ledger
@@ -89,7 +83,6 @@ fn test_payment_lifecycle_two_phase_holds() {
         assert_eq!(merch_acc.balance.credits_posted.as_u128(), 50_000);
     }
 
-    // 3. Authorize and Void a second payment ($20.00)
     let p2_id = state.next_payment_id.fetch_add(1, Ordering::SeqCst) as u128;
     let hold2_id = state.next_transfer_id.fetch_add(1, Ordering::SeqCst) as u128;
 
@@ -122,7 +115,6 @@ fn test_payment_lifecycle_two_phase_holds() {
     p2.transition_to_voided(now + 30).expect("void payment");
     assert_eq!(p2.state, PaymentState::Voided);
 
-    // Verify ledger invariants strictly hold
     {
         let ledger = state.ledger.read().unwrap();
         ledger.verify_invariants().expect("invariants must hold");
@@ -149,30 +141,23 @@ fn test_webhook_hmac_tamper_and_replay_protection() {
     let valid_signature =
         WebhookVerifier::compute_signature(secret, &raw_bytes).expect("compute signature");
 
-    // 1. Valid signature passes
     assert!(WebhookVerifier::verify_signature(secret, &raw_bytes, &valid_signature).is_ok());
 
-    // 2. Tampered payload rejects
     let mut tampered_bytes = raw_bytes.clone();
     tampered_bytes[10] ^= 0x01;
     assert!(WebhookVerifier::verify_signature(secret, &tampered_bytes, &valid_signature).is_err());
 
-    // 3. Forged signature rejects
     let bad_sig = "a".repeat(64);
     assert!(WebhookVerifier::verify_signature(secret, &raw_bytes, &bad_sig).is_err());
 
-    // 4. Freshness check: expired event rejects
     let stale_event_time = now - 600; // 10 minutes ago (tolerance 300s)
     assert!(WebhookVerifier::verify_freshness(stale_event_time, now, 300).is_err());
 
-    // 5. Fresh event within window passes
     let fresh_event_time = now - 60; // 1 minute ago
     assert!(WebhookVerifier::verify_freshness(fresh_event_time, now, 300).is_ok());
 
-    // 6. Deduplication check
     let dedupe = demo::webhook::WebhookDeduplicator::new();
     assert!(dedupe.check_and_record("evt_unique_1").is_ok());
-    // Duplicate call with same event_id must fail
     assert!(dedupe.check_and_record("evt_unique_1").is_err());
 }
 
@@ -181,7 +166,6 @@ fn test_multi_rail_solana_settlement_and_receipt() {
     let secret = b"rail-test-secret".to_vec();
     let state = AppState::new(secret).expect("app state");
 
-    // Perform a transfer
     let t = Transfer::new_immediate(
         TransferId::new(99_001),
         AccountDirectory::customer(101),
@@ -196,7 +180,6 @@ fn test_multi_rail_solana_settlement_and_receipt() {
         ledger.create_transfer(t.clone()).expect("post transfer");
     }
 
-    // Settle on Solana USDC rail
     let submission = state
         .solana_rail
         .submit_batch(1, std::slice::from_ref(&t))
@@ -208,7 +191,6 @@ fn test_multi_rail_solana_settlement_and_receipt() {
     assert_eq!(submission.total_amount, 80_000);
     assert!(submission.merkle_root.is_some());
 
-    // Generate and independently verify transfer receipt
     let receipt = state
         .solana_rail
         .generate_receipt(1, 0, &t)
@@ -231,7 +213,6 @@ fn test_three_way_reconciliation_zero_drift_and_incident_detection() {
     let post_id = 7001;
     let now = 1_700_000_000;
 
-    // 1. Setup matching state in App and Ledger
     let hold = Transfer::new_pending(
         TransferId::new(hold_id),
         AccountDirectory::customer(customer_id),
@@ -268,7 +249,6 @@ fn test_three_way_reconciliation_zero_drift_and_incident_detection() {
     let payments = vec![payment.clone()];
     let merchants = vec![1, 2, 3];
 
-    // Audit happy path: drift must be 0
     let report = {
         let ledger = state.ledger.read().unwrap();
         ReconciliationEngine::audit(&payments, &ledger, &merchants, None, now + 10).unwrap()
@@ -280,7 +260,6 @@ fn test_three_way_reconciliation_zero_drift_and_incident_detection() {
     assert_eq!(report.ledger_settled_total, 45_000);
     assert!(report.incident.is_none());
 
-    // 2. Simulate Drift: App payment claims $55,000, but ledger only recorded $45,000
     let mut tampered_payment = payment;
     tampered_payment.amount = 55_000;
     let tampered_payments = vec![tampered_payment];
@@ -313,11 +292,9 @@ async fn test_http_api_smoke_and_dashboard() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    // Check dashboard HTML endpoint
     let client = reqwest_or_hyper(addr, "/").await;
     assert!(client.contains("TrustLedger Settlement Engine"));
 
-    // Check Prometheus /metrics endpoint
     let metrics_resp = reqwest_or_hyper(addr, "/metrics").await;
     assert!(metrics_resp.contains("HTTP/1.1 200 OK"));
     assert!(metrics_resp.contains("trustledger_transfers_received_total"));

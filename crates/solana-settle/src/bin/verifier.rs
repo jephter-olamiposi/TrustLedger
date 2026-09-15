@@ -127,18 +127,13 @@ fn verify_direct_args(root_hex: &str, leaf_hex: &str, proof_path: &PathBuf) -> E
 
     let proof = match MmrProof::from_bytes(&proof_bytes) {
         Ok(p) => p,
-        Err(_) => {
-            // Fallback: try reading as JSON
-            match serde_json::from_slice::<MmrProof>(&proof_bytes) {
-                Ok(p) => p,
-                Err(e) => {
-                    eprintln!(
-                        "[FAILED] Failed to deserialize proof (tried postcard and json): {e}"
-                    );
-                    return ExitCode::FAILURE;
-                }
+        Err(_) => match serde_json::from_slice::<MmrProof>(&proof_bytes) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("[FAILED] Failed to deserialize proof (tried postcard and json): {e}");
+                return ExitCode::FAILURE;
             }
-        }
+        },
     };
 
     match proof.verify(&expected_root, &leaf_hash) {

@@ -66,7 +66,6 @@ impl AppState {
         let merchants = vec![1, 2, 3];
         let customers = vec![101, 102, 103];
 
-        // Seed accounts with 1,000,000 units ($1,000.00 USDC) initial deposit
         AccountDirectory::setup_accounts(
             &mut ledger,
             scale,
@@ -158,7 +157,6 @@ async fn handle_authorize(
     State(state): State<Arc<AppState>>,
     Json(req): Json<AuthorizeRequest>,
 ) -> Result<Json<PaymentResponse>, (StatusCode, String)> {
-    // 1. Idempotency check
     if let Some(cached_json) = state
         .idempotency
         .try_acquire(&req.idempotency_key)
@@ -173,7 +171,6 @@ async fn handle_authorize(
     let transfer_id = state.next_transfer_id.fetch_add(1, Ordering::SeqCst) as u128;
     let now = 1_700_000_000;
 
-    // 2. Reserve funds on ledger via pending hold
     let customer_acc = AccountDirectory::customer(req.customer_id);
     let merchant_acc = AccountDirectory::merchant(req.merchant_id);
 
@@ -264,7 +261,6 @@ async fn handle_capture(
     let post_transfer_id = state.next_transfer_id.fetch_add(1, Ordering::SeqCst) as u128;
     let now = 1_700_000_100;
 
-    // Post hold on ledger
     {
         let mut ledger = state.ledger.write().map_err(|_| {
             (
@@ -317,7 +313,6 @@ async fn handle_void(
 
     let now = 1_700_000_100;
 
-    // Void hold on ledger
     {
         let mut ledger = state.ledger.write().map_err(|_| {
             (
@@ -392,7 +387,6 @@ async fn handle_webhook(
             "missing signature header".to_string(),
         ))?;
 
-    // 1. Verify HMAC
     WebhookVerifier::verify_signature(&state.webhook_secret, body.as_bytes(), signature).map_err(
         |_| {
             (
@@ -405,18 +399,16 @@ async fn handle_webhook(
     let payload: WebhookPayload =
         serde_json::from_str(&body).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
 
-    // 2. Freshness check (5 min tolerance)
+    // Invariant: enforce a strict 5-minute replay window against delayed or replayed webhooks.
     let now = 1_700_000_100;
     WebhookVerifier::verify_freshness(payload.timestamp, now, 300)
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
 
-    // 3. Deduplication check
     state
         .webhook_dedupe
         .check_and_record(&payload.event_id)
         .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
 
-    // Process event
     match payload.event_type.as_str() {
         "charge.authorized" => {
             let transfer_id = state.next_transfer_id.fetch_add(1, Ordering::SeqCst) as u128;
@@ -533,7 +525,6 @@ async fn handle_settlement_batch(
 ) -> Result<Json<BatchResponse>, (StatusCode, String)> {
     let next_seq = state.batch_seq.fetch_add(1, Ordering::SeqCst) + 1;
 
-    // Collect posted transfers from ledger
     let transfers: Vec<Transfer> = {
         let ledger = state.ledger.read().map_err(|_| {
             (
