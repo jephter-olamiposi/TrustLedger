@@ -9,7 +9,7 @@ description = "Merkle Mountain Range (MMR) and cryptographic proof engine for Tr
 
 [dependencies]
 ledger-core = { path = "../ledger-core", version = "0.1" }
-sha2 = "0.10"
+sha2 = "0.11"
 serde = { workspace = true }
 postcard = { workspace = true }
 thiserror = { workspace = true }
