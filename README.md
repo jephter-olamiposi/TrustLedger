@@ -1,14 +1,32 @@
 # TrustLedger
 
-A Rust financial ledger built around double-entry accounting, durable writes, replicated state, and cryptographic settlement commitments.
+TrustLedger is a Rust financial ledger built around double-entry accounting, durable writes, replicated state, and cryptographic settlement commitments.
 
-TrustLedger is an engineering project for exploring the storage, consistency, and recovery problems around financial ledger state.
+## The problem
+
+Moving money is not only an accounting problem. A ledger must also answer difficult questions when something goes wrong:
+
+- What survives if the process crashes during a write?
+- Can the same journal be replayed into the same balances after restart?
+- What happens when a node is partitioned from the cluster?
+- How do we detect drift between payment state, ledger state, and settlement state?
+- How can another system verify that a transfer was included in a settled batch?
+
+A happy-path transfer function does not answer those questions. Financial state needs explicit invariants, durable recovery, controlled admission under load, and an audit trail that can be verified independently.
+
+## Why I built it
+
+I built TrustLedger to study those boundaries in one working system rather than as isolated examples. The project uses a small deterministic ledger core as the source of truth, then surrounds it with the storage, consensus, settlement, reconciliation, and simulation layers needed to exercise realistic failure cases.
+
+The goal is not to claim that a portfolio project is a finished payment processor. The goal is to make the important properties visible in code: money conservation, legal transfer transitions, crash recovery, quorum-based replication, settlement proofs, and reproducible failure tests.
+
+## What it contains
 
 The core keeps accounting deterministic and explicit. Money is represented with fixed-point integer amounts, transfers follow a defined lifecycle, and every mutation is checked against balance and conservation invariants.
 
 Around that core, the project adds a durable write-ahead log, bounded ingress with micro-batching, a 3-node OpenRaft path, cryptographic batch commitments with a Merkle Mountain Range, a Solana settlement program, reconciliation, observability, and deterministic failure testing.
 
-The goal is simple: make the important failure cases visible instead of assuming they will never happen.
+The rest of this README explains how those pieces fit together and what each one proves.
 
 ---
 
