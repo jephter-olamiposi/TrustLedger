@@ -24,7 +24,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"
 [dependencies]
 ledger-core = { path = "../ledger-core", version = "0.1" }
 merkle = { path = "../merkle", version = "0.1" }
-solana-program = "2.2.0"
+solana-program = "5.0.0"
 borsh = { version = "1.5", features = ["derive"] }
 serde = { workspace = true }
 serde_json = "1.0"
