@@ -2283,7 +2283,7 @@ dependencies = [
  "ledger-core",
  "observability",
  "rand 0.8.8",
- "rand_chacha 0.3.1",
+ "rand_chacha 0.9.0",
  "serde",
  "tempfile",
  "thiserror 2.0.20",
