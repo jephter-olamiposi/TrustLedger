@@ -11,7 +11,7 @@ description = "TrustLedger reference client, demo application, and verification 
 ledger-core = { path = "../../crates/ledger-core", version = "0.1" }
 merkle = { path = "../../crates/merkle", version = "0.1" }
 solana-settle = { path = "../../crates/solana-settle", version = "0.1" }
-solana-program = "2.2.0"
+solana-program = "5.0.0"
 observability = { path = "../../crates/observability", version = "0.1" }
 simulator = { path = "../../simulator", version = "0.1" }
 axum = "0.7"
