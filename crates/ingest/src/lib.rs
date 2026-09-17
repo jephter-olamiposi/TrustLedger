@@ -1,8 +1,7 @@
-//! TrustLedger network ingress and micro-batching crate.
+//! Ingestion service for TrustLedger traffic and micro-batched writes.
 //!
-//! Provides high-throughput gRPC endpoints, bounded non-blocking queues,
-//! backpressure load-shedding, and single-writer group-committed batching
-//! over write-ahead log persistence and double-entry ledger state.
+//! The crate accepts bounded gRPC input, applies queue backpressure, and
+//! persists committed batches into the ledger.
 
 #![deny(missing_docs)]
 #![deny(unsafe_code)]

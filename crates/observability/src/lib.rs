@@ -1,7 +1,7 @@
-//! Production-grade observability, telemetry, and Prometheus exposition for TrustLedger.
+//! Observability and Prometheus metrics for TrustLedger.
 //!
-//! Provides lock-free atomic counters, gauges, fixed-bucket histograms, and a central
-//! registry producing Prometheus 2.0 text exposition format without external runtime dependencies.
+//! The crate exposes counters, gauges, histograms, and a registry that renders
+//! Prometheus text format without external runtime dependencies.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]

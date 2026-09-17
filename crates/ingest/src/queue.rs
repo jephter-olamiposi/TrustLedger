@@ -1,4 +1,4 @@
-//! Bounded ingress queue and internal command routing for ledger execution.
+//! Bounded ingress queue for ledger operations.
 
 use ledger_core::account::{Account, AccountFlags, AccountType};
 use ledger_core::amount::{Amount, Scale};

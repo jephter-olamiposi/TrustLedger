@@ -1,12 +1,11 @@
-//! Client-side receipt generation, file persistence, and audit verification helpers.
+//! Receipt generation and verification helpers for settlement proofs.
 
 use merkle::{Hash32, MmrProof, ProofError};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
-/// A self-contained, cryptographically auditable receipt proving that a transfer
-/// was finalized in a specific settlement batch and committed to Solana.
+/// A receipt containing a transfer's inclusion proof in a committed settlement batch.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransferReceipt {
     /// Unique transfer ID.

@@ -5,28 +5,28 @@ use thiserror::Error;
 /// Root error type for the demo application.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum DemoError {
-    /// Errors originating from payment state machine operations.
+    /// Payment lifecycle failures.
     #[error("payment error: {0}")]
     Payment(#[from] PaymentError),
 
-    /// Errors originating from webhook ingestion and signature validation.
+    /// Webhook validation or replay failures.
     #[error("webhook error: {0}")]
     Webhook(#[from] WebhookError),
 
-    /// Errors originating from idempotency key management.
+    /// Idempotency key conflicts.
     #[error("idempotency conflict: {0}")]
     Idempotency(#[from] IdempotencyError),
 
-    /// Errors originating from settlement rail adapters.
+    /// Settlement rail failures.
     #[error("settlement rail error: {0}")]
     Rail(#[from] RailError),
 
-    /// Errors originating from three-way reconciliation audits.
+    /// Reconciliation drift or mismatch failures.
     #[error("reconciliation error: {0}")]
     Reconciliation(#[from] ReconciliationError),
 }
 
-/// Errors originating from payment state machine operations.
+/// Payment lifecycle failures.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum PaymentError {
     /// Requested transition is illegal according to the payment lifecycle.

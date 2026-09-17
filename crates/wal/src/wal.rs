@@ -1,10 +1,7 @@
-//! Append-only, checksummed write-ahead log.
+//! WAL implementation used by TrustLedger for durable record append and recovery.
 //!
-//! One writer. Each batch is one framed record (see [`crate::record`]);
-//! `append` returns only after the frame is `fsync`ed, so an acknowledged seq
-//! survives a crash. Opening a [`Wal`] replays every frame from the start,
-//! discards anything after the first broken frame (a crash tail), and reports
-//! the recovered state so the caller can rebuild application state.
+//! Each append is a framed record and the recovery scan keeps the valid prefix
+//! while discarding the torn tail left by a crash or partial write.
 
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Seek, SeekFrom, Write};

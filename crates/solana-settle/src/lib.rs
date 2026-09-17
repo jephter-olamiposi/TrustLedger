@@ -1,8 +1,7 @@
-//! Solana settlement commitments for TrustLedger batch roots.
+//! On-chain settlement commitments for TrustLedger batch roots.
 //!
-//! The off-chain ledger produces MMR roots for settled batches and the program in this
-//! crate records those roots on-chain for independent verification. The public API is
-//! intentionally narrow: initialize the PDA, commit a new root, and verify inclusion.
+//! The off-chain ledger produces MMR roots for settled batches; this crate records
+//! those roots on-chain and verifies inclusion against the canonical state.
 
 #![deny(missing_docs)]
 #![deny(unsafe_code)]

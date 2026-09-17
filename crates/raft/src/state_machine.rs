@@ -1,7 +1,7 @@
 //! Applies committed Raft entries to the ledger core.
 //!
-//! The state machine keeps the replicated log and the ledger in sync and preserves the
-//! same balance and ordering invariants as the single-writer path.
+//! The state machine keeps the replicated log aligned with the ledger and preserves
+//! the same balance and ordering invariants as the single-writer path.
 
 use std::io::Cursor;
 use std::sync::Arc;

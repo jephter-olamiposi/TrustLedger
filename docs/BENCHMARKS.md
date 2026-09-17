@@ -1,112 +1,65 @@
 # Benchmarks
 
-## ledger-core hot paths (criterion)
+This document tracks recorded hot-path measurements for the ledger core and related durability paths. The figures are reference results from the benchmark harness, not capacity guarantees for a production deployment.
 
-Measured with the criterion harness at `crates/ledger-core/benches/throughput.rs`
-under `profile.release` (`lto="thin"`, `codegen-units=1`, `overflow-checks=true`).
-Criterion reports statistical medians over 100 samples (warmup 3 s,
-measurement 5 s), which removes the warm-up and frequency effects that made the
-old one-shot harness load-sensitive.
+The results are machine- and load-dependent. Re-run the harnesses before using them for capacity planning.
 
-Last measured run: 2026-09-08 (criterion 0.7.0, post undo-log `apply_batch`).
+## ledger-core
 
-| Workload | Throughput | ns/op |
-| --- | --- | --- |
-| `create_transfer` (immediate) | ~4.4M transfers/sec | ~229 |
-| two-phase `create_pending` + `post_pending` round-trip | ~1.6M pairs/sec | ~627 |
-| `apply_batch` (256 transfers/batch) | ~3.4M transfers/sec | ~297 |
-| `Ledger::replay` (journal events) | ~4.9M events/sec | ~206 |
+The main criterion harness is in `crates/ledger-core/benches/throughput.rs` and is intended to measure the critical transfer and replay paths in release mode.
 
-`apply_batch` is reported per transfer: the criterion iteration is a 256-batch
-(76.1 µs per iteration), and `~297 ns/op` is that median divided by the batch
-size. `replay` is 41.2 ms per 200,000-event journal (~206 ns/event), including
-`verify_invariants` over the rebuilt ledger.
-
-## wal persistence (zero-dependency harness)
-
-`crates/wal/benches/persistence.rs` (`cargo bench -p wal`), same release
-profile and machine. 10,000 batches of 16 KiB each. This stays a plain
-`Instant` harness on purpose: `append` measures the device fsync rate, which
-criterion's iteration model would not make more meaningful (ADR-0008).
-
-| Workload | Throughput |
+| Workload | Result |
 | --- | --- |
-| `append` (fsync per batch, `sync_per_append: true`) | ~4.5 MB/s (~274 batches/s, ~3.7 ms/batch) |
-| `append` (buffered, `sync_per_append: false`) | ~660–780 MB/s (~40–47k batches/s) |
-| recover + replay 10,000 batches | ~0.5–1.3 GB/s (load-varying) |
+| `create_transfer` | ~4.4M transfers/sec |
+| two-phase pending + post round trip | ~1.6M pairs/sec |
+| `apply_batch` (256 transfers) | ~3.4M transfers/sec |
+| `Ledger::replay` | ~4.9M events/sec |
 
-### Reading these numbers
+These are the hot paths most relevant to the accounting engine: mutation creation, batch execution, and rebuild after crash recovery.
 
-- **The per-batch fsync is the durability boundary** (ADR-0007): the ~3.7 ms
-  is the device sync latency, not the codec or checksum. CRC32C checksum cost
-  is ~2 orders of magnitude below the sync, so verifying every frame is
-  essentially free next to durability.
-- **Recovery** is a streaming one-frame-at-a-time scan
-  ([`record::next_record`] shares one scanner with `read_records`, so neither
-  allocates the whole log). The measured spread (~0.5–1.3 GB/s) is machine
-  load, not the scan. A 100 MB journal recovers in well under a second even at
-  the low end, which is why snapshots only matter for far larger journals.
-- A busy node wanting higher ack throughput must batch fsyncs explicitly
-  (ingest, Phase 3) — that is a policy choice, not a wal contract change.
+## WAL durability
 
-## Reading these numbers
+The WAL benchmark is implemented in `crates/wal/benches/persistence.rs` and measures fsync behavior on durable appends. The documented values are recorded reference results; a local run may differ substantially by filesystem and host load.
 
-- **`create_transfer` exceeds the >1M transfers/sec claim in ADR-0001**,
-  confirming the `BTreeMap` determinism decision (ADR-0002) costs nothing
-  measurable on the hot path. All four workloads clear it.
-- **`apply_batch` runs within ~30% of single `create_transfer`**: it applies
-  speculatively with an undo log of per-event pre-images instead of
-  snapshotting the whole ledger, so rollback cost scales with *batch size*, not
-  ledger size. The remaining gap is the batch's event `Vec` and undo
-  allocations; the ledger's clone path is gone from `apply_batch`.
-- **`replay` at ~4.9M events/sec** validates journal-as-truth economics: a
-  1M-event ledger replays in ~0.2 s, so state rebuild on restart is cheap.
-- The two-phase round-trip (~627 ns) is the only workload that moves two
-  transfers per iteration (pending create + post), so it is ~2.7x the single
-  `create_transfer` cost — the state machine, not the math.
+| Workload | Result |
+| --- | --- |
+| fsync-per-append | ~4.5 MB/s |
+| buffered append | ~660–780 MB/s |
+| recovery replay | ~0.5–1.3 GB/s |
 
-## Merkle Mountain Range (MMR) & Cryptographic Proofs (Phase 5)
+The important point is that the durability ceiling is dominated by device sync latency. The checksum and record framing are relatively cheap compared with a real synchronous write.
 
-Measured using `crates/merkle` and `crates/solana-settle` on Apple Silicon (M-series) / Ubuntu CI.
+## MMR and settlement proofs
 
-| Operation | Benchmark Profile | Latency / Throughput |
-| :--- | :--- | :--- |
-| MMR Append Leaf (`rfc6962` RFC-compliant) | Incremental append + node hashing | ~820 ns / leaf |
-| MMR Root Computation | Per-batch state root generation (1,024 leaves) | ~0.84 ms / batch |
-| Merkle Inclusion Proof Generation | $O(\log N)$ proof construction | ~4.2 µs / proof |
-| Independent Verifier Proof Check | Offline CLI / Solana on-chain runtime | ~3.6 µs (< 4k Compute Units on Solana) |
+The Merkle and settlement layer is measured separately because its workload is proof generation and verification rather than ledger mutation.
 
----
+| Operation | Profile |
+| --- | --- |
+| MMR append | ~820 ns / leaf |
+| root computation | ~0.84 ms / 1024-leaf batch |
+| inclusion proof generation | ~4.2 µs / proof |
+| proof verification | ~3.6 µs |
 
-## Deterministic Simulation Testing (DST) Harness (Phase 7)
+This is small enough to be practical in a settlement flow without making the system inherently proof-bound.
 
-Measured using `simulator` running discrete-event seeded pseudo-random chaos workloads across 3 consensus nodes.
+## Deterministic simulation testing
 
-| Scenario | Injected Faults | Simulated Ticks | Wall-Clock Duration | Result |
-| :--- | :--- | :--- | :--- | :--- |
-| `NetworkPartition` | Majority/Minority split (2 vs 1) | 220 ticks | ~1.8 ms | **Passed** ($\text{Drift} \equiv 0$) |
-| `CrashTornWrite` | Leader crash + torn frame truncation + reboot | 225 ticks | ~2.1 ms | **Passed** (100% Recovery) |
-| `ChaosSoak` | 5% packet loss, 2% duplicates, random crashes | 250 ticks | ~2.9 ms | **Passed** (Log Agreement) |
-| `Fuzz Campaign` | 100 consecutive seeds across all 3 scenarios | 30,000 ticks | ~0.38 s | **0 Violations** |
+The simulator measures resilience under faults such as partitions, leader loss, packet loss, and torn-write recovery.
 
-### Key DST Insights
-- **Time Dilation Factor:** Discrete simulation executes ~100,000x faster than wall-clock hardware tests without sleeping.
-- **Zero Flakiness:** A failure under seed `0xDEADBEEF` reproduces on step $K$ with 100% fidelity every single execution.
+| Scenario | Result |
+| --- | --- |
+| `NetworkPartition` | passed, zero drift |
+| `CrashTornWrite` | passed, full recovery |
+| `ChaosSoak` | passed, log agreement maintained |
+| fuzz campaign | 0 violations across seeded scenarios |
 
----
+This is the project’s main way to validate that failure behavior is not just described but actively tested.
 
-## Regression protocol
+## Reading the numbers
 
-The ledger-core numbers are a **CI regression gate** (`scripts/bench_gate.py`
-in the quality job, ADR-0008):
+- These measurements are regression targets, not marketing metrics.
+- The WAL durability numbers reflect raw storage latency more than application logic.
+- The accounting path is fast enough to support micro-batching without sacrificing deterministic behavior.
+- The MMR and proof layer stays comfortably within practical settlement-latency constraints.
 
-1. Run `cargo bench -p ledger-core --bench throughput -- --save-baseline gate`.
-2. Each measured median is compared against `docs/benchmarks/baseline.json`;
-   the gate fails when a median exceeds `recorded * tolerance_factor` (2.0).
-3. The 2x factor deliberately absorbs the difference between CI's
-   `ubuntu-latest` runner and developer machines; it is a loud early-warning
-   net for ≥2x regressions, not a precise comparator.
-
-Re-record the baseline after **intentional** performance work: record the new
-`target/criterion/*/gate/estimates.json` medians into `baseline.json` with the
-protocol in the script header, and update the table above.
+The purpose of benchmarking here is to protect correctness and avoid silent regressions in high-leverage paths.

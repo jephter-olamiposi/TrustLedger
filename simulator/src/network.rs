@@ -1,7 +1,7 @@
-//! Simulated discrete-event network transport with fault injection.
+//! Simulated network transport for consensus testing.
 //!
-//! Models packet delay jitter, random drops, duplication, out-of-order delivery,
-//! asymmetric and symmetric network partitions, and node isolation.
+//! The transport injects delay, drops, duplication, reordering, and network
+//! partitions to exercise failure handling deterministically.
 
 use std::collections::{BTreeSet, BinaryHeap};
 

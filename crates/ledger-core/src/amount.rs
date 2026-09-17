@@ -86,9 +86,7 @@ impl fmt::Display for Scale {
 
 /// Unsigned money amount in base units (e.g. cents for USD).
 ///
-/// The inner `u128` is private: amounts are only created through
-/// [`Amount::new`]/`From<u128>` and mutated through the checked arithmetic
-/// methods, so the field cannot be poked past overflow/validation boundaries.
+/// The inner `u128` stays private so arithmetic stays checked and overflow-safe.
 #[derive(
     Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
 )]

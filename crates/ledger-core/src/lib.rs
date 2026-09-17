@@ -1,8 +1,7 @@
-//! TrustLedger's deterministic double-entry ledger engine.
+//! Deterministic double-entry ledger engine for TrustLedger.
 //!
-//! The crate-level documentation is the repo README (included verbatim below),
-//! so its `rust` example is the single source of truth for the two-phase flow:
-//! `cargo test --doc` compiles it directly (see ADR-0008).
+//! The crate docs include the project README so the example flow stays aligned
+//! with the repository-level contract and source-of-truth behavior.
 #![doc = include_str!("../../../README.md")]
 #![deny(missing_docs)]
 #![deny(unsafe_code)]

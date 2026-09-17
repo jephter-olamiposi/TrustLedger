@@ -1,4 +1,4 @@
-//! HTTP handlers for demo ledger operations and reconciliation flows.
+//! HTTP handlers for the demo ledger and reconciliation API.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};

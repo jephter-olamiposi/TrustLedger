@@ -1,7 +1,7 @@
-//! Synthetic financial workload generator producing realistic payment traffic.
+//! Synthetic financial workload generator for the simulator.
 //!
-//! Models direct settlement transfers, two-phase authorization holds, captures,
-//! and cancellations across configured account pools.
+//! It exercises direct transfers, holds, captures, and cancellations across a
+//! configured account pool.
 
 use std::collections::BTreeMap;
 

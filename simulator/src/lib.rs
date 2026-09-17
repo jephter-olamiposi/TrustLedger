@@ -1,8 +1,7 @@
-//! Deterministic simulation harness for consensus, storage faults, and ledger invariants.
+//! Deterministic simulator for consensus and ledger invariants.
 //!
-//! The simulator provides a virtual clock, virtual network, fault-injected storage, and
-//! workload generators so cluster failures and financial invariants can be tested under
-//! reproducible conditions.
+//! It models virtual time, network faults, storage faults, and workload generation
+//! so cluster failures and financial invariants can be tested reproducibly.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]

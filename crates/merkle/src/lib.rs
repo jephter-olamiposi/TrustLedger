@@ -1,8 +1,7 @@
 //! Append-only Merkle Mountain Range commitments for settlement proofs.
 //!
-//! The crate builds a deterministic MMR over ledger events and exposes inclusion-proof
-//! helpers for audit and verification paths. Hashes use explicit domain separation so
-//! the same byte sequence cannot be confused across leaf, node, and peak positions.
+//! This crate builds deterministic MMR roots over ledger batches and exposes
+//! inclusion-proof helpers for audit and verification paths.
 
 #![deny(missing_docs)]
 #![deny(unsafe_code)]

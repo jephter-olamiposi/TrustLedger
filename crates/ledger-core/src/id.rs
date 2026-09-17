@@ -8,8 +8,7 @@ use crate::error::LedgerError;
 
 /// Unique account ID.
 ///
-/// The inner `u128` is private; IDs are created through [`AccountId::new`]
-/// or `From<u128>`, so a raw numeric payload cannot leak into ledger keys.
+/// The inner `u128` stays private so IDs remain distinct typed keys.
 #[derive(
     Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
 )]
@@ -64,8 +63,7 @@ impl FromStr for AccountId {
 
 /// Unique transfer ID.
 ///
-/// The inner `u128` is private; IDs are created through [`TransferId::new`]
-/// or `From<u128>`.
+/// The inner `u128` stays private so transfer IDs remain type-safe.
 #[derive(
     Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
 )]

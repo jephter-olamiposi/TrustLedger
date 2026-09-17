@@ -1,7 +1,7 @@
-//! Multi-node cluster simulation executing consensus and replicated state machines.
+//! Cluster simulation for consensus and replication.
 //!
-//! Models leader election, quorum commits (majority progression vs minority isolation),
-//! WAL fsync durability, crash recovery, and catch-up log replication.
+//! The harness exercises leader election, quorum commits, WAL durability, crash
+//! recovery, and catch-up replication under deterministic failures.
 
 use std::collections::{BTreeMap, BTreeSet};
 

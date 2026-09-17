@@ -1,108 +1,76 @@
-# TrustLedger: Production Operator Runbook
+# Operator runbook
 
-> **Target Audience:** On-Call Site Reliability Engineers (SRE), Systems Operators  
-> **Classification:** Production Operations Playbook  
-> **Last Updated:** 2026-09-15
+This runbook is a practical guide for engineers operating the ledger during incidents, restarts, or reconciliation problems.
 
----
+## 1. Quick checks
 
-## 1. Quick Incident Response Summary
+Check the API and metrics first:
 
-| Alert / Symptom | Severity | First Action | Secondary Action |
-| :--- | :--- | :--- | :--- |
-| `trustledger_reconciliation_drift_gauge != 0` | **SEV-1** | Halt automated payout rails (`POST /api/rails/pause`) | Inspect `GET /api/reconciliation` incident report |
-| Raft Leader Missing / Election Failure | **SEV-1** | Inspect `docker logs trustledger-raft-1` | Verify network partition via `docker exec` ping |
-| Ingress 429 Spike (`RESOURCE_EXHAUSTED`) | **SEV-2** | Check queue backlog metrics on Prometheus `:9090` | Scale consumer threads or adjust `max_batch_size` |
-| WAL CRC32C Torn Write on Boot | **SEV-2** | Review automatic recovery logs | If manual truncation needed, follow §4 |
-
----
-
-## 2. Cluster Health Inspection & Prometheus Dashboards
-
-### 2.1 Live Health Check
 ```bash
-# Check HTTP API and Prometheus Metrics
 curl -s http://localhost:8080/metrics | grep trustledger_
-
-# Check Cluster Node Endpoints
-curl -s http://localhost:50051/health
-curl -s http://localhost:50052/health
-curl -s http://localhost:50053/health
+curl -X GET http://localhost:8080/api/reconciliation
 ```
 
-### 2.2 Key Operational Metrics to Monitor
-- `trustledger_transfers_committed_total`: Total transfers posted to immutable ledger.
-- `trustledger_reconciliation_drift_gauge`: Must be strictly `0`. Any non-zero value indicates internal accounting divergence.
-- `trustledger_ingress_batch_size_bucket`: Inspect batch efficiency (target: > 100 transfers/batch).
-- `trustledger_wal_sync_duration_seconds`: Storage fsync latency p99 (target: < 5ms).
+Focus on:
 
----
+- reconciliation drift
+- ingress rejection rate
+- WAL recovery warnings
+- raft leader health
 
-## 3. Investigating Reconciliation Drift (SEV-1)
+## 2. Reconciliation drift
 
-When `trustledger_reconciliation_drift_gauge` moves from `0`:
+If reconciliation shows non-zero drift, treat it as a priority incident.
 
-1. **Trigger Immediate Reconciliation Audit:**
-   ```bash
-   curl -X GET http://localhost:8080/api/reconciliation | jq .
-   ```
-2. **Review Incident Object:**
-   ```json
-   {
-     "status": "DriftDetected",
-     "drift": -10000,
-     "incident": {
-       "incident_id": "INC-1700000200-9842",
-       "drift_amount": -10000,
-       "details": "Settled payments total (55000) exceeds ledger recorded credits (45000)",
-       "recommended_action": "Triage payment ID discrepancy and replay missing ledger batch"
-     }
-   }
-   ```
-3. **Remediation Protocol:**
-   - Query payment lifecycle log for payments in `Captured` state without a corresponding `posted_transfer_id`.
-   - Replay missing transfer commands using client idempotency keys (`Idempotency-Key` header).
+1. inspect the reconciliation report
+2. identify any captured payments without matching ledger mutations
+3. verify payment lifecycle state and transfer IDs
+4. replay or correct the missing ledger state using idempotent client keys
 
----
+This should be resolved before allowing settlement or payout flows to continue automatically.
 
-## 4. Disaster Recovery & Manual WAL Replay
+## 3. WAL recovery
 
-If a storage node experiences hardware corruption or ungraceful shutdown:
+If the process restarts and the WAL reports torn tail or recovery truncation, this is usually expected behavior after a crash.
 
-1. **Inspect WAL Integrity:**
-   ```bash
-   cargo run -p wal --bin wal-inspect -- --path /data/wal/ledger.wal
-   ```
-2. **Execute Safe Recovery & Truncation:**
-   TrustLedger's `wal` engine automatically detects torn frames at EOF and safely truncates corrupt trailing bytes:
-   ```bash
-   # Start node with recovery mode flag
-   RUST_LOG=info trustledger-node --wal-path /data/wal/ledger.wal --recover
-   ```
-3. **Replay Journal into In-Memory Balance Cache:**
-   The state machine reconstructs accounts deterministically from sequence 1:
-   ```rust
-   let ledger = Ledger::replay(scale, &journal_events)?;
-   ledger.verify_invariants()?;
-   ```
+The usual recovery path is:
 
----
+1. inspect the WAL error
+2. verify the maintained prefix is intact
+3. rebuild ledger state from the verified journal
+4. confirm invariants still hold before resuming writes
 
-## 5. Running the Deterministic Simulator (DST) for Incident Post-Mortem
+Do not guess past a sequence mismatch; that indicates a more serious file integrity issue.
 
-When diagnosing an edge-case concurrency or partition race condition discovered in staging:
+## 4. Raft health
 
-1. **Run Full Scenario Suite:**
-   ```bash
-   cargo run -p simulator -- --scenario all --steps 300
-   ```
-2. **Run Seeded Replay (100% Deterministic Reproducibility):**
-   ```bash
-   # Re-run exact sequence that produced an invariant violation
-   cargo run -p simulator -- --seed 0xDEADBEEF --scenario soak --steps 500
-   ```
-3. **Run Multi-Seed Fuzz Campaign:**
-   ```bash
-   # Fuzz 50 consecutive seeds under random network loss and crash faults
-   cargo run -p simulator -- --fuzz 50 --steps 150
-   ```
+If the raft cluster loses leadership or cannot form a majority:
+
+1. inspect node logs
+2. verify connectivity between peers
+3. confirm the cluster is not partitioned beyond quorum tolerance
+4. wait for the leader election process to settle before resuming writes
+
+The system is designed for majority-based progress, not single-node certainty.
+
+## 5. Settlement delays
+
+If Solana settlement is delayed:
+
+- keep the off-chain ledger authoritative
+- retain pending batch state
+- retry settlement with bounded backoff
+- continue auditing proof generation and batch continuity
+
+External RPC latency should not block core accounting progress.
+
+## 6. Escalation
+
+Escalate when:
+
+- reconciliation drift remains non-zero after investigation
+- WAL sequence mismatch appears
+- a cluster cannot elect or maintain a leader
+- ledger invariants fail during replay
+
+These are system-level issues, not normal operational noise.

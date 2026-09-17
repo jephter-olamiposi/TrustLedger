@@ -1,4 +1,4 @@
-# ADR-0012: Deterministic Simulation Testing (DST), Telemetry, and Production Operations
+# ADR-0012: Deterministic Simulation Testing (DST) and Telemetry
 
 - **Status:** Accepted
 - **Date:** 2026-09-15
@@ -19,7 +19,7 @@ To achieve Tier-1 systems verification comparable to TigerBeetle and FoundationD
 
 ## Decision
 
-We implement a discrete-event Deterministic Simulation Testing harness (`simulator/`) and production telemetry suite (`crates/observability`).
+We implement a discrete-event Deterministic Simulation Testing harness (`simulator/`) and an observability crate (`crates/observability`).
 
 ### 1. Discrete Virtual Time Scheduler (`SimClock`)
 - Eliminates reliance on `std::time::Instant` and system wall clocks.
@@ -68,7 +68,7 @@ We implement a discrete-event Deterministic Simulation Testing harness (`simulat
 - **Instant Reproducibility:** Any failure encountered in CI outputs the exact CLI replay command:
   `cargo run -p simulator -- --seed <SEED> --scenario <NAME> --steps <N>`
 - **High Test Density:** Fuzz campaigns can exercise 100+ random seeds in under 1 second, validating millions of edge-case transitions.
-- **Production Confidence:** Proves that network partitions, packet drops, and torn-write disk crashes never corrupt financial balances.
+- **Failure coverage:** Exercises network partitions, packet drops, and torn-write recovery while checking the simulator's accounting and log-agreement invariants.
 
 ### Negative / Trade-offs
 - Simulation models must be kept synchronized with protocol evolutions in `crates/raft` and `crates/ledger-core`.

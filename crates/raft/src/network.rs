@@ -1,7 +1,7 @@
-//! Simulated in-memory network router and RPC transport for Raft nodes.
+//! Simulated network transport for Raft node testing.
 //!
-//! Provides deterministic fault injection (network partitions, packet loss,
-//! isolation, and healing) for rigorous Jepsen-style consensus testing.
+//! The router injects deterministic partitions, isolation, and recovery so the
+//! cluster can be exercised under failure scenarios.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;

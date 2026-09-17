@@ -1,4 +1,4 @@
-//! HTTP server startup and lifecycle coordination for the reference client.
+//! HTTP server for the TrustLedger demo app.
 
 use std::net::SocketAddr;
 use std::sync::Arc;

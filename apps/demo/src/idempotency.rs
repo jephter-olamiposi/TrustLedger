@@ -1,4 +1,4 @@
-//! Thread-safe idempotency key engine for financial write endpoints.
+//! Idempotency guard for mutating requests.
 
 use std::collections::HashMap;
 use std::sync::RwLock;
@@ -14,10 +14,7 @@ enum IdempotencyStatus {
     Completed(String),
 }
 
-/// An in-memory, thread-safe idempotency coordinator.
-///
-/// Guarantees that duplicate requests return the original response without
-/// re-executing state mutations on the ledger, while rejecting concurrent in-flight requests.
+/// In-memory guard that replays a prior success and rejects concurrent writes.
 #[derive(Debug, Default)]
 pub struct IdempotencyStore {
     entries: RwLock<HashMap<String, IdempotencyStatus>>,

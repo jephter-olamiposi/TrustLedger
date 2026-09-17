@@ -1,23 +1,17 @@
-//! Cryptographic hashing primitives and domain-separated hash operators for Merkle Mountain Ranges.
+//! Hash helpers and domain separation for the MMR.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
 
-/// Domain separation prefix for leaf nodes: `0x00`.
-///
-/// Prevents second pre-image attacks where an internal node could be passed
-/// as a leaf (RFC 6962).
+/// Prefix for leaf hashes; domain separation prevents an internal node from
+/// being interpreted as a leaf with the same byte representation.
 pub const LEAF_PREFIX: u8 = 0x00;
 
-/// Domain separation prefix for internal tree nodes: `0x01`.
-///
-/// Internal nodes hash `0x01 || left_child || right_child`.
+/// Prefix for internal-node hashes, kept distinct from leaf hashes.
 pub const NODE_PREFIX: u8 = 0x01;
 
-/// Domain separation prefix for bagging mountain peaks: `0x02`.
-///
-/// Peak bagging folds peaks from right to left using `0x02 || left_peak || right_peak`.
+/// Prefix for peak aggregation, kept distinct from leaves and tree nodes.
 pub const PEAK_PREFIX: u8 = 0x02;
 
 /// A 32-byte cryptographic hash produced by SHA-256.

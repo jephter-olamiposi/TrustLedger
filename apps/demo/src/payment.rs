@@ -1,4 +1,4 @@
-//! Payment lifecycle and ledger integration for the demo app.
+//! Payment lifecycle for the demo app.
 
 use ledger_core::account::{AccountFlags, AccountType};
 use ledger_core::amount::{Amount, Scale};

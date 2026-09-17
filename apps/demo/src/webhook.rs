@@ -1,4 +1,4 @@
-//! Webhook verification, freshness checks, and idempotent replay protection.
+//! Webhook verification and replay protection.
 
 use std::collections::HashSet;
 use std::sync::RwLock;

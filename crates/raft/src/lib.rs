@@ -1,4 +1,4 @@
-//! OpenRaft-backed replication layer for TrustLedger.
+//! Replication layer for TrustLedger consensus and failover.
 
 #![deny(missing_docs)]
 #![deny(unsafe_code)]

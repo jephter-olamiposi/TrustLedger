@@ -2,7 +2,7 @@
 
 A Rust financial ledger built around double-entry accounting, durable writes, replicated state, and cryptographic settlement commitments.
 
-TrustLedger is an engineering project for exploring what happens when a financial ledger has to care about more than moving numbers between accounts.
+TrustLedger is an engineering project for exploring the storage, consistency, and recovery problems around financial ledger state.
 
 The core keeps accounting deterministic and explicit. Money is represented with fixed-point integer amounts, transfers follow a defined lifecycle, and every mutation is checked against balance and conservation invariants.
 
@@ -147,7 +147,7 @@ TrustLedger currently has two main execution paths around the same ledger core.
                          Reconciliation
 ```
 
-The production-style ingress path is intentionally single-writer: a bounded Tokio queue feeds an engine that accumulates commands for up to 512 operations or 2 ms, prepares them against the ledger, persists the resulting events to the WAL with one group commit, and then commits them to memory.
+The ingress path is intentionally single-writer: a bounded Tokio queue feeds an engine that accumulates commands for up to 512 operations or 2 ms, prepares them against the ledger, persists the resulting events to the WAL with one group commit, and then commits them to memory.
 
 The repository also contains a 3-node OpenRaft implementation whose committed entries are applied sequentially to the same ledger core. The current Raft log store is an in-memory `MemLogStore`; it is intentionally separate from the file-backed WAL used by the ingest engine.
 
@@ -544,10 +544,10 @@ TrustLedger is intentionally opinionated. The main trade-offs are:
 
 The repository keeps the deeper reasoning separate from the README:
 
-* [Core ledger ADR](docs/adr/ADR-0001-scale-and-amount-representation.md)
-* [WAL persistence ADR](docs/adr/ADR-0007-wal-crash-recovery-and-framing.md)
-* [Distributed consensus ADR](docs/adr/ADR-0009-raft-consensus-and-cluster-replication.md)
-* [MMR and Solana settlement ADR](docs/adr/ADR-0010-solana-settlement-pda-and-merkle-proofs.md)
+* [Core ledger ADR](docs/adr/ADR-0001-core-ledger.md)
+* [WAL persistence ADR](docs/adr/ADR-0007-wal-persistence.md)
+* [Distributed consensus ADR](docs/adr/ADR-0009-distributed-consensus-raft.md)
+* [MMR and Solana settlement ADR](docs/adr/ADR-0010-merkle-mountain-range-solana-settlement.md)
 * [Benchmarks](docs/BENCHMARKS.md)
 * [Failure modes (FMEA)](docs/failure-modes.md)
 * [Operator runbook](docs/OPERATOR-RUNBOOK.md)

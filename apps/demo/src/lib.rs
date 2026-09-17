@@ -1,7 +1,8 @@
-//! Demo application for TrustLedger payment flows and settlement verification.
+//! Demo app for TrustLedger payment flows and settlement verification.
 //!
-//! The crate exercises the same ledger lifecycle used in production: pending holds,
-//! settlement, rails, webhook verification, and reconciliation against the on-chain root.
+//! It exercises the ledger lifecycle used by the reference application:
+//! pending holds, settlement, rails, webhook verification, and reconciliation
+//! against the on-chain root.
 
 #![deny(missing_docs)]
 #![deny(unsafe_code)]
