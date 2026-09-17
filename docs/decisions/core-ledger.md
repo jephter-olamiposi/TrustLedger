@@ -1,4 +1,4 @@
-# ADR-0001: Core Ledger Architecture and Financial Invariants
+# Core Ledger Architecture and Financial Invariants
 
 - **Status:** Accepted
 - **Date:** 2026-09-07
@@ -44,11 +44,11 @@ We establish `crates/ledger-core` as an in-memory, deterministic, double-entry f
 
 These ADRs refine the decisions above without changing the architecture:
 
-- **ADR-0002** — account/transfer indexes are `BTreeMap` for deterministic iteration and replay.
-- **ADR-0003** — journal payloads become versioned before the WAL phase; replay is fail-loud on corrupted or out-of-order journals.
-- **ADR-0004** — availability reads return zero when overdrawn (view, not guard); `close_account` owns the account lifecycle with a journal event.
-- **ADR-0005** — transfer-state gates stay runtime-checked and typed; typestate seeds deferred.
-- **ADR-0006** — state-transition ordering is compute-then-write (state flip last); event timestamps are monotonic under `LedgerError::TimestampBehindPrior`.
+- **Deterministic indexes** — account and transfer indexes use `BTreeMap` for deterministic iteration and replay.
+- **Journal versioning** — journal payloads are versioned; replay fails clearly on corrupted or out-of-order journals.
+- **Availability and lifecycle** — availability reads return zero when overdrawn; `close_account` owns the account lifecycle with a journal event.
+- **Transfer state typing** — transfer-state gates stay runtime-checked and typed; typestate seeds are deferred.
+- **Transition ordering** — state changes use compute-then-write ordering, and event timestamps are monotonic under `LedgerError::TimestampBehindPrior`.
 
 Noted in passing: `Transfer` no longer carries a per-transfer `Scale`; the
 ledger-wide scale (decision 2) is the single scale authority.

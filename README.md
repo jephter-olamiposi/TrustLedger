@@ -478,7 +478,7 @@ TrustLedger/
 ├── simulator/             # Deterministic distributed-systems simulator
 │
 ├── docs/
-│   ├── adr/               # Architecture decisions
+│   ├── decisions/         # Design decisions
 │   ├── BENCHMARKS.md      # Benchmark methodology and results
 │   ├── failure-modes.md   # Failure-mode analysis
 │   └── OPERATOR-RUNBOOK.md
@@ -560,12 +560,12 @@ Every design choice has a cost. The main trade-offs are:
 
 ## Further reading
 
-The repository keeps the deeper reasoning separate from the README:
+The repository keeps the deeper design reasoning separate from the README:
 
-* [Core ledger ADR](docs/adr/ADR-0001-core-ledger.md)
-* [WAL persistence ADR](docs/adr/ADR-0007-wal-persistence.md)
-* [Distributed consensus ADR](docs/adr/ADR-0009-distributed-consensus-raft.md)
-* [MMR and Solana settlement ADR](docs/adr/ADR-0010-merkle-mountain-range-solana-settlement.md)
+* [Core ledger decision](docs/decisions/core-ledger.md)
+* [WAL persistence decision](docs/decisions/wal-persistence.md)
+* [Distributed consensus decision](docs/decisions/distributed-consensus-raft.md)
+* [MMR and Solana settlement decision](docs/decisions/merkle-mountain-range-solana-settlement.md)
 * [Benchmarks](docs/BENCHMARKS.md)
 * [Failure modes (FMEA)](docs/failure-modes.md)
 * [Operator runbook](docs/OPERATOR-RUNBOOK.md)

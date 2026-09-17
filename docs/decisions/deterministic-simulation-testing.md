@@ -1,4 +1,4 @@
-# ADR-0012: Deterministic Simulation Testing (DST) and Telemetry
+# Deterministic Simulation Testing (DST) and Telemetry
 
 - **Status:** Accepted
 - **Date:** 2026-09-15

@@ -1,4 +1,4 @@
-# ADR-0011: Reference Client, Webhook Security, Multi-Rail Settlement, and 3-Way Reconciliation
+# Reference Client, Webhook Security, Multi-Rail Settlement, and 3-Way Reconciliation
 
 - **Status:** Accepted
 - **Date:** 2026-09-10

@@ -1,4 +1,4 @@
-# ADR-0009: Distributed Consensus via OpenRaft and Replicated State Machine
+# Distributed Consensus via OpenRaft and Replicated State Machine
 
 - **Status:** Accepted
 - **Date:** 2026-09-10
@@ -10,7 +10,7 @@
 
 TrustLedger's settlement guarantees require zero lost committed transfers and strict single-writer
 consistency even when individual server nodes crash, restart, or experience network partitions.
-Single-node WAL persistence (ADR-0007) guarantees crash recovery on a single machine, but hardware
+Single-node WAL persistence guarantees crash recovery on a single machine, but hardware
 failure, data center loss, or machine maintenance requires distributed active replication.
 
 In `plans/trustledger/01_PROJECT_PLAN.md` (Pillar C, Phase 4), we require:

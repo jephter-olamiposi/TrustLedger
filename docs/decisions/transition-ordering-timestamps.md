@@ -1,4 +1,4 @@
-# ADR-0006: Transactional State-Transition Ordering and Oversight Timestamps
+# Transactional State-Transition Ordering and Monotonic Timestamps
 
 - **Status:** Accepted
 - **Date:** 2026-09-07

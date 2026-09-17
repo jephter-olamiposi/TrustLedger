@@ -1,4 +1,4 @@
-# ADR-0002: Deterministic Account and Transfer Index (BTreeMap)
+# Decision 0002: Deterministic Account and Transfer Index (BTreeMap)
 
 - **Status:** Accepted
 - **Date:** 2026-09-07
@@ -53,5 +53,5 @@ stable serialization of the balance view.
   two-phase lifecycle depends on.
 
 ## References
-- ADR-0001, decisions 3 (two-phase lifecycle) and 4 (deterministic replay).
+- Decision 0001, decisions 3 (two-phase lifecycle) and 4 (deterministic replay).
 - Bench script `scripts/check`, workload `benches/throughput.rs`.

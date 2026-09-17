@@ -1,4 +1,4 @@
-# ADR-0004: Availability Semantics and Account Lifecycle
+# Availability Semantics and Account Lifecycle
 
 - **Status:** Accepted
 - **Date:** 2026-09-07
@@ -51,4 +51,4 @@ Two behavioral questions needed explicit decisions:
 ## References
 - `Balance::available_liability`, `Balance::available_asset`,
   `Ledger::close_account` in `crates/ledger-core`.
-- ADR-0001 decision 1 (two-entity schema) and decision 4 (journal-as-truth).
+- The core ledger design (two-entity schema and journal-as-truth).

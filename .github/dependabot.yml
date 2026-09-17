@@ -1,4 +1,4 @@
-# Dependency automation for the supply-chain gate (ADR-0008).
+# Dependency automation for the supply-chain gate.
 # cargo-deny (deny.toml) revalidates advisory/license/bans on every PR; these
 # updates keep Cargo.lock and the actions current so the gate has recent data.
 

@@ -1,4 +1,4 @@
-# ADR-0007: Write-Ahead Log — Framing, Durability, and Recovery
+# Write-Ahead Log: Framing, Durability, and Recovery
 
 - **Status:** Accepted
 - **Date:** 2026-09-08
@@ -21,7 +21,7 @@ crash-safe commit path:
 3. The journal format must be stable, versioned, and self-describing enough
    that a torn tail is detectable and distinguishable from logical corruption.
 
-ADR-0003 already fixed the ledger's *event* format (postcard schema version 1).
+The journal versioning decision already fixed the ledger's *event* format (postcard schema version 1).
 This ADR fixes the *transport*: the byte framing that makes an event batch
 indexable, verifiable, and recoverable on disk.
 
@@ -33,10 +33,10 @@ pure; it never opens files. The write-ahead flow is:
 1. **compute** — `ledger.prepare_batch(&mut self, &[Transfer])` speculatively
    applies the batch against live state (an O(batch) undo-log apply, no
    whole-ledger clone), captures the `Vec<LedgerEvent>` it produced, and rolls
-   the speculation back — a prepare changes no state (ADR-0006's
+  the speculation back — a prepare changes no state (the transition-ordering
    compute-write ordering, reused, not duplicated);
 2. **durable** — the caller encodes the batch with `ledger_core::codec`
-   (postcard, ADR-0003) and appends the opaque byte slice to the wal;
+  (postcard) and appends the opaque byte slice to the wal;
 3. **commit** — `ledger.commit_events(&events)` re-validates and applies the
    same event list to memory, atomically (a failed mid-batch event rolls the
    ledger back). Nothing may mutate the ledger between prepare and commit
@@ -53,7 +53,7 @@ length fields, so no index can drift from the bytes:
 | Field | Size | Encoding |
 | --- | --- | --- |
 | magic | 4 | `u32` LE = `0x4C_4554_57` (`"LETW"`) |
-| version | 1 | `u8` = 1 (ADR-0003's schema version, incremented with it) |
+| version | 1 | `u8` = 1 (the journal schema version, incremented with it) |
 | flags | 1 | `u8` reserved, `0` (future: compression, codec id) |
 | seq | 8 | `u64` LE, monotonically `+1` per record, first record = 0 |
 | payload_len | 4 | `u32` LE, ≤ `DEFAULT_MAX_PAYLOAD_LEN` (256 KiB) |
@@ -107,7 +107,7 @@ next `append` stays contiguous — this lets callers rebuild state after restart
 
 The wal stores `&[u8]` and knows nothing about ledger events. The ledger owns
 the postcard mapping (`ledger_core::codec`), so the wire format can evolve
-under ADR-0003's versioning without touching the storage layer. A malformed
+under the journal versioning rules without touching the storage layer. A malformed
 payload that still checksums is a *ledger* error, not a *wal* error.
 
 ### Snapshots
@@ -143,7 +143,7 @@ anomalies into truncation or a hard `SeqMismatch`, never into silence.
   frame. `tests/wal_e2e.rs` proves it by truncating the wal at *every* byte
   offset of a 16-batch mixed journal and asserting the rebuilt ledger equals
   exactly the acked prefix, byte-for-byte, plus `verify_invariants`.
-- The ledger stays pure and deterministic (ADR-0002, ADR-0003): replay from
+- The ledger stays pure and deterministic: replay from
   wal records reproduces state exactly, because replay rides the same
   `apply_event` code path as live commits.
 - Torn-tail and corruption are detected with CRC32C on every frame; cost is
@@ -202,4 +202,4 @@ Failure modes and operator response (see also `docs/WAL-RUNBOOK.md`):
 - `crates/ledger-core/src/{codec.rs, ledger.rs}` — postcard batch mapping and
   the `prepare_batch`/`commit_events`/`apply_event` split.
 - `crates/ledger-core/tests/wal_e2e.rs` — end-to-end ack/recovery/replay proof.
-- ADR-0003 (journal versioning), ADR-0006 (compute-then-write ordering).
+- Journal versioning and transition ordering decisions.

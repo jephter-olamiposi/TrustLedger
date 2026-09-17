@@ -1,4 +1,4 @@
-# ADR-0008: Quality Gates, Supply-Chain Governance, and Benchmark Regression
+# Decision 0008: Quality Gates, Supply-Chain Governance, and Benchmark Regression
 
 - **Status:** Accepted
 - **Date:** 2026-09-08

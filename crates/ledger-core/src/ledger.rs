@@ -516,7 +516,7 @@ impl Ledger {
     /// back to `(base_journal_len, base_timestamp)` and the error is
     /// returned.
     ///
-    /// Every mutation below is compute-then-write (ADR-0006): all checks run
+    /// Every mutation below uses compute-then-write ordering: all checks run
     /// before any state changes, so a failing event never leaves a partial
     /// write for the rollback to clean up.
     fn apply_with_undo(

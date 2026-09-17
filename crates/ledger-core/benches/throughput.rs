@@ -3,7 +3,7 @@
 //! Statistical medians replace the one-shot harness (see
 //! `docs/BENCHMARKS.md`). `scripts/bench_gate.py` runs these, records them
 //! against `docs/benchmarks/baseline.json`, and fails the gate if a median
-//! exceeds the committed bound (ADR-0008).
+//! exceeds the committed benchmark bound.
 
 #![allow(missing_docs)]
 

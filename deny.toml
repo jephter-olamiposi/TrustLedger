@@ -1,4 +1,4 @@
-# Supply-chain gate (ADR-0008). Enforced in CI by
+# Supply-chain gate. Enforced in CI by
 # EmbarkStudios/cargo-deny-action@v2 (`cargo deny check`).
 #
 # cargo-deny v2 defaults: every advisory severity is deny, and every license

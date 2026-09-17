@@ -1,4 +1,4 @@
-# ADR-0010: Merkle Mountain Range (MMR) and Solana On-Chain Settlement Finality
+# Decision 0010: Merkle Mountain Range (MMR) and Solana On-Chain Settlement Finality
 
 - **Status:** Accepted
 - **Date:** 2026-09-10

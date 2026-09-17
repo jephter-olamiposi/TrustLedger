@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Benchmark regression gate for the ledger-core hot paths (ADR-0008).
+"""Benchmark regression gate for the ledger-core hot paths.
 
 Runs the criterion benchmark with `--save-baseline gate`, reads each measured
 median from `target/criterion/<bench>/gate/estimates.json`, and fails if any

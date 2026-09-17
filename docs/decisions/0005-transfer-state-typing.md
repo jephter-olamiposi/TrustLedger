@@ -1,4 +1,4 @@
-# ADR-0005: Keep Runtime Transfer-State Checks (Defer Typestate Seeds)
+# Decision 0005: Keep Runtime Transfer-State Checks (Defer Typestate Seeds)
 
 - **Status:** Accepted
 - **Date:** 2026-09-07
@@ -56,7 +56,7 @@ runtime enforcement as a deliberate, tested guard. Rationale:
 - **Typestate now:** rejected as premature API surface for an authority the
   journal already holds.
 - **Panic on invalid state:** rejected — all errors are typed in this codebase
-  (ADR-0001 decision 5).
+  (Decision 0001 decision 5).
 
 ## References
 - `create_transfer` / `create_pending` in `crates/ledger-core/src/ledger.rs`;

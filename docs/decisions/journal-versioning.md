@@ -1,4 +1,4 @@
-# ADR-0003: Journal Event Versioning Before the WAL
+# Journal Event Versioning Before the WAL
 
 - **Status:** Accepted
 - **Date:** 2026-09-07
@@ -48,6 +48,6 @@ timestamps.
   not a mixed stream.
 
 ## References
-- ADR-0001 decision 4 (journal-as-truth); the WAL framing and codec in
+- The core ledger's journal-as-truth rule; the WAL framing and codec in
   `crates/wal/src/` and `crates/ledger-core/src/codec.rs`.
 - `Ledger::replay` fail-loud behavior in `crates/ledger-core/src/ledger.rs`.
