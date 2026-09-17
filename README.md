@@ -1,144 +1,69 @@
 # TrustLedger
 
-**A fast, crash-resilient double-entry ledger in Rust with cryptographic settlement on Solana.**
+A Rust financial ledger built around double-entry accounting, durable writes, replicated state, and cryptographic settlement commitments.
 
-[![CI Status](https://img.shields.io/github/actions/workflow/status/jephter-olamiposi/TrustLedger/ci.yml?branch=main&label=CI&style=flat-square)](https://github.com/jephter-olamiposi/TrustLedger/actions)
-[![MSRV](https://img.shields.io/badge/MSRV-1.80-blue.svg?style=flat-square)](https://github.com/jephter-olamiposi/TrustLedger)
-[![License](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg?style=flat-square)](https://github.com/jephter-olamiposi/TrustLedger/blob/main/LICENSE)
-[![Safety](https://img.shields.io/badge/Unsafe-0%25-brightgreen.svg?style=flat-square)](https://github.com/jephter-olamiposi/TrustLedger)
-[![Performance](https://img.shields.io/badge/Throughput->4.4M%20tx%2Fs-purple.svg?style=flat-square)](docs/BENCHMARKS.md)
+TrustLedger is an engineering project for exploring what happens when a financial ledger has to care about more than moving numbers between accounts.
 
-[Quickstart](#quickstart) |
-[Why TrustLedger?](#why-trustledger) |
-[Architecture](#architecture) |
-[Core Invariants](#core-invariants) |
-[Crate Layout](#crate-layout) |
-[Benchmarks](#benchmarks) |
-[Chaos Testing (DST)](#chaos-testing-dst) |
-[ADRs](docs/adr/)
+The core keeps accounting deterministic and explicit. Money is represented with fixed-point integer amounts, transfers follow a defined lifecycle, and every mutation is checked against balance and conservation invariants.
+
+Around that core, the project adds a durable write-ahead log, bounded ingress with micro-batching, a 3-node OpenRaft path, cryptographic batch commitments with a Merkle Mountain Range, a Solana settlement program, reconciliation, observability, and deterministic failure testing.
+
+The goal is simple: make the important failure cases visible instead of assuming they will never happen.
 
 ---
 
-## Why TrustLedger?
+## What TrustLedger models
 
-Most modern banking and payment apps still run on traditional relational databases like PostgreSQL or MySQL. While relational databases are great general-purpose tools, they struggle with high-volume financial ledgers:
+A payment is not always a single transfer.
 
-1. **Row locks choke throughput:** When thousands of customers pay the same merchant, database row-level locks on that merchant's balance serialize every transaction into a massive bottleneck.
-2. **Silent balance drift:** If a database crashes mid-commit or an external payment rail drops a webhook, balances across services can quietly drift out of sync with no automated way to detect or repair the discrepancy.
-3. **Torn writes cause data corruption:** An abrupt server power cut while writing to disk can leave half-written, corrupt database pages that fail upon restart.
-4. **Auditors must blindly trust the database admin:** Traditional databases offer zero external mathematical proof that historical transactions haven't been quietly edited, deleted, or backdated by a rogue employee or compromised credential.
-
-I built **TrustLedger** to solve these problems by rethinking the ledger stack from the ground up:
-
-* **Keep the hot path in memory:** Pure deterministic state machine in Rust processing **over 4.4 million transfers per second** with zero database lock contention.
-* **Durability before acknowledgment:** Mutations are written to an append-only, CRC32C-checksummed Write-Ahead Log (WAL) with group fsync. Crash recovery is tested down to every single byte boundary of the log.
-* **Balances physically cannot leak:** Double-entry accounting is enforced at the type level. Debits must equal credits on every mutation, available balance cannot drop below zero, and floating-point math is strictly forbidden.
-* **Cryptographic proof on Solana:** Batches of settled transfers are hashed into an incremental Merkle Mountain Range (MMR) and anchored to a Solana Program Derived Address (PDA). Any client can independently verify their payment receipt offline without trusting the ledger operator.
-* **Continuous 3-way reconciliation:** An automated background auditor continuously reconciles payment gateway intents, double-entry ledger balances, and Solana blockchain state, ensuring zero balance drift ($\text{Drift} \equiv \$0.00$).
-
----
-
-## Quickstart
-
-### 1. Launch the Single-Page Operations Console
-
-TrustLedger includes an interactive web dashboard (built with Axum and clean light-theme Tailwind CSS) to test real payment processing, card holds, and on-chain settlement:
-
-```bash
-# Build and run the demo server on port 8080:
-cargo run -p demo --bin demo
-```
-
-Open your browser to:
-```text
-http://127.0.0.1:8080/
-```
-
-From this console, you can:
-* **Run the 1-Click Pipeline:** Watch an order authorize with a hold ($50.00), capture to the merchant, commit to the Solana PDA, and verify its Merkle inclusion proof.
-* **Experience Two-Phase Card Holds:** Place funds in escrow and watch the double-entry books reserve money until captured or cancelled.
-* **Simulate & Heal Balance Drift:** Click "Simulate Drift" to inject a fake $50 bank discrepancy and watch the continuous reconciliation engine detect and auto-heal it.
-* **Trigger In-Modal Solana Anchoring:** Commit batches to Solana L1 directly from inside the digital receipt modal.
-* **Run Hardware Chaos Tests:** Trigger simulated network partitions or torn-write power failures directly from the browser.
-
-### 2. Verify a Cryptographic Receipt Offline
-
-Any customer or external auditor can verify payment finality against the Solana blockchain using the standalone CLI:
-
-```bash
-# Verify a portable transfer receipt JSON:
-cargo run -p solana-settle --bin verifier -- --receipt path/to/receipt.json
-
-# Or verify raw parameters directly:
-cargo run -p solana-settle --bin verifier -- \
-  --root <64-char-hex-solana-merkle-root> \
-  --leaf <64-char-hex-transfer-hash> \
-  --proof-file path/to/proof.bin
-```
-
-When verified, the CLI exits with code `0`:
-```text
-[VERIFIED] Cryptographic proof matches on-chain Merkle root!
-Status: Transfer is immutably included in settlement batch #42.
-```
-
-### 3. Run the Multi-Node Cluster in Docker
-
-```bash
-# Launch a 3-node Raft consensus cluster and Prometheus scraper:
-docker compose -f docker/docker-compose.yml up -d
-
-# Inspect live Prometheus exposition metrics:
-curl -s http://localhost:8080/metrics | grep trustledger_
-```
-
----
-
-## Architecture
+A common lifecycle is:
 
 ```text
-                                  CLIENT TRAFFIC
-                                        │
-                         ┌──────────────┴──────────────┐
-                         │   tonic/gRPC & REST Ingress  │
-                         │   Bounded Queue Backpressure │
-                         └──────────────┬──────────────┘
-                                        │ (Micro-Batch Accumulator: 512 tx or 2ms)
-                                        ▼
-                         ┌─────────────────────────────┐
-                         │   OpenRaft Consensus Group  │
-                         │   3-Node Replicated Quorum   │
-                         └──────────────┬──────────────┘
-                                        │
-                    ┌───────────────────┴───────────────────┐
-                    ▼                                       ▼
-    ┌───────────────────────────────┐       ┌───────────────────────────────┐
-    │       Write-Ahead Log         │       │     In-Memory State Engine    │
-    │   Append-Only + CRC32C Frame  │       │   Deterministic BTreeMap      │
-    │   Single-Fsync Group Commit   │──────▶│   Two-Phase Pending Holds     │
-    │   Torn-Write Crash Recovery   │       │   Zero Overdraft Conservation │
-    └───────────────────────────────┘       └───────────────┬───────────────┘
-                                                            │
-                                                            ▼ (Batch Settled)
-                                            ┌───────────────────────────────┐
-                                            │  Merkle Mountain Range (MMR)  │
-                                            │  RFC 6962 Domain Separation   │
-                                            │  O(log N) Cryptographic Proof │
-                                            └───────────────┬───────────────┘
-                                                            │
-                                                            ▼ (Anchored to L1)
-                                            ┌───────────────────────────────┐
-                                            │   Solana On-Chain Notary PDA  │
-                                            │   Tamper-Evident Root Chaining│
-                                            │   Offline Verifier CLI (<4k CU)│
-                                            └───────────────────────────────┘
+Authorization
+     │
+     ▼
+ Pending hold
+     │
+     ├──────────────► Voided
+     │
+     ▼
+  Captured
+     │
+     ▼
+ Settled batch
+     │
+     ▼
+ MMR root
+     │
+     ▼
+ Solana commitment
 ```
+
+The ledger models that lifecycle directly.
+
+A pending transfer reserves funds. It can later be posted, including a partial capture, or voided to release the reservation. Once posted or voided, the pending transfer is terminal.
 
 ---
 
-## Code Example
+## Why the core is designed this way
 
-The core accounting engine is pure, thread-safe, and zero-allocation on validation errors. Here is how a two-phase payment (Card Hold $\to$ Capture) works in `ledger-core`:
+Financial state is a poor place for implicit rules.
+
+TrustLedger makes several of those rules explicit in the data model and execution path:
+
+* Monetary values use `Amount(u128)` with an explicit decimal `Scale`; floating-point values are not used for ledger arithmetic.
+* Accounts have explicit accounting types such as asset, liability, equity, revenue, and expense.
+* Posted and pending debits and credits are tracked separately.
+* Transfers cannot debit and credit the same account or use a zero amount.
+* Pending transfers can only move to Posted or Voided.
+* The ledger checks conservation of posted and pending debits and credits and verifies that pending balances match the transfer index.
+* Mutations use a compute-then-write approach. Batch preparation uses an undo log so speculative state can be rolled back without cloning the whole ledger.
+
+The result is a small accounting core that is easy to replay and reason about.
+
+### Code example
+
+Here is how an authorization hold and capture run against `ledger-core`:
 
 ```rust
 use ledger_core::account::{AccountFlags, AccountType};
@@ -148,181 +73,489 @@ use ledger_core::transfer::Transfer;
 use ledger_core::Ledger;
 
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
-// Initialize ledger configured for USDC (6 decimal places)
 let mut ledger = Ledger::new(Scale::usdc());
 let vault = AccountId::new(1);
 let alice = AccountId::new(2);
 
-// Create bank clearing vault (Asset) and customer wallet (Liability)
 ledger.create_account(vault, AccountType::Asset, AccountFlags::bank_asset(), Scale::usdc(), 0)?;
 ledger.create_account(alice, AccountType::Liability, AccountFlags::customer(), Scale::usdc(), 0)?;
 
-// Phase 1: Place an authorization hold ($1.00 USDC = 1,000,000 atomic units)
 let hold = Transfer::new_pending(TransferId::new(1), vault, alice, Amount::new(1_000_000), 0)?;
 ledger.create_pending(hold)?;
-
-// Phase 2: Post the hold to capture settled funds to Alice's balance
 ledger.post_pending(TransferId::new(1), TransferId::new(2), Amount::new(1_000_000), 0)?;
-
-// Formally verify that debits equal credits across all accounts
 ledger.verify_invariants()?;
 # Ok(())
 # }
 ```
 
-> **Living Documentation:** This README is compiled directly into `ledger-core`'s crate documentation via `#![doc = include_str!("../../../README.md")]`. The example above is tested in CI with `cargo test --doc`, ensuring the documentation never goes stale.
-
 ---
 
-## Core Invariants
+## Architecture
 
-TrustLedger enforces invariants at the type level, backed by property tests:
-
-* **Debits Must Equal Credits:** Total debits equal total credits for both posted and pending balances at all times ($\sum \text{Debits} \equiv \sum \text{Credits}$). Money cannot appear from nowhere or vanish.
-* **Acknowledged = Fsynced:** A mutation is never confirmed to the caller until it is durably flushed to disk via `fsync`. If the power cord is pulled mid-write, crash recovery truncates the torn tail to the last intact frame.
-* **No Negative Balances:** All currency math uses `u128` integer units and fixed decimal scale. Overdrafts return strongly typed `LedgerError::InsufficientFunds`. Floating-point numbers are completely barred from the codebase.
-* **Deterministic Replay:** Accounts and transfers live in `BTreeMap` structures. Replaying an identical transaction journal on any machine will always produce the exact same in-memory state, byte-for-byte.
-* **Verifiable On-Chain Roots:** Every settled batch commits its Merkle root to a Solana PDA using root chaining (`hash(prior_root, new_mmr_root)`), creating a permanent public audit trail.
-* **Continuous 3-Way Reconciliation:** Real-time auditing proves balance parity across payment intents, internal double-entry books, and Solana on-chain state ($\text{Drift} \equiv \$0.00$).
-
----
-
-## Crate Layout
-
-The codebase is split into modular, focused crates:
-
-| Crate | What it does |
-|---|---|
-| [`crates/ledger-core`](crates/ledger-core) | Pure in-memory double-entry accounting engine, balance invariants, and deterministic journal replay. |
-| [`crates/wal`](crates/wal) | Append-only write-ahead log with CRC32C framing, torn-write recovery, and snapshot checkpoints. |
-| [`crates/ingest`](crates/ingest) | High-concurrency gRPC ingress (`proto/ledger.proto`), bounded queue backpressure, and micro-batching. |
-| [`crates/raft`](crates/raft) | 3-node OpenRaft consensus cluster with automated failover in <0.5s and split-brain immunity. |
-| [`crates/merkle`](crates/merkle) | Append-only Merkle Mountain Range (MMR) generating $O(\log N)$ cryptographic inclusion proofs. |
-| [`crates/solana-settle`](crates/solana-settle) | Solana BPF program for on-chain batch notarization and standalone offline verifier CLI. |
-| [`crates/observability`](crates/observability) | Lock-free atomic metrics and Prometheus text exposition (`/metrics`). |
-| [`crates/simulator`](crates/simulator) | Deterministic Simulation Testing (DST) harness for seeded pseudo-random chaos injection. |
-| [`apps/demo`](apps/demo) | Reference client, payment lifecycle state machine, 3-way reconciliation, and single-page web UI. |
-
----
-
-## Benchmarks
-
-Throughput and latency are measured with Criterion (`benches/throughput.rs` and `benches/persistence.rs`). CI enforces automated regression gates (`scripts/bench_gate.py`) to prevent performance slips.
-
-*Measured on Apple Silicon, `release` profile with Link-Time Optimization (LTO):*
-
-### In-Memory Accounting Engine (`ledger-core`)
-
-| Operation | Throughput | Latency (Median) |
-|---|---|---|
-| **Direct Transfer** (`create_transfer`) | **4,366,800 tx/sec** | **229 ns / op** |
-| **Two-Phase Hold $\to$ Post** (Round-trip) | **1,594,800 pairs/sec** | **627 ns / op** |
-| **Batch Application** (256 operations/batch) | **3,367,000 tx/sec** | **297 ns / op** |
-| **Journal Replay** (`Ledger::replay`) | **4,854,000 events/sec** | **206 ns / op** |
-
-### Write-Ahead Log Durability (`crates/wal`)
-
-| Mode | Bandwidth | Throughput | Batch Latency |
-|---|---|---|---|
-| **Immediate Fsync** (Per batch) | 3.50 MB/s | ~214 batches/sec | 4.68 ms |
-| **Group Commit** (Buffered + single fsync) | **259.30 MB/s** | **15,827 batches/sec** | **63.2 µs** |
-| **Crash Recovery & Replay** | **1,092.93 MB/s** | **~66,700 batches/sec** | **15.0 µs** |
-
----
-
-## Chaos Testing (DST)
-
-Unit tests only test what you anticipate. To catch subtle distributed bugs and hardware failures, TrustLedger uses **Deterministic Simulation Testing** inspired by FoundationDB and TigerBeetle (`crates/simulator`):
+TrustLedger currently has two main execution paths around the same ledger core.
 
 ```text
-       ┌────────────────────────────────────────────────────────┐
-       │     Deterministic Simulation Testing Engine (DST)      │
-       │    Virtual Discrete-Event Time  •  ChaCha8 Seeded PRNG │
-       └───────────────────────────┬────────────────────────────┘
-                                   │
-         ┌─────────────────────────┼─────────────────────────┐
-         ▼                         ▼                         ▼
-┌──────────────────┐      ┌──────────────────┐      ┌──────────────────┐
-│ Network Chaos    │      │ Storage Faults   │      │ Node Crashes     │
-│ • Drop packets   │      │ • Torn writes    │      │ • Abrupt reboots │
-│ • Partitions     │      │ • Corrupt frames │      │ • Leader kills   │
-│ • Latency jitter │      │ • Truncated logs │      │ • Split-brains   │
-└──────────────────┘      └──────────────────┘      └──────────────────┘
-                                   │
-                                   ▼
-          FORMAL ASSERTION: Total Wealth Conserved Across Every Tick
+                         CLIENT REQUESTS
+                               │
+                               ▼
+                    ┌─────────────────────┐
+                    │ Bounded Ingress     │
+                    │ Tokio mpsc          │
+                    │ Backpressure        │
+                    └──────────┬──────────┘
+                               │
+                               ▼
+                    ┌─────────────────────┐
+                    │ Single-Writer       │
+                    │ Ingest Engine       │
+                    │ Micro-batching      │
+                    └──────────┬──────────┘
+                               │
+                     prepare → persist
+                               │
+                               ▼
+                    ┌─────────────────────┐
+                    │ Write-Ahead Log     │
+                    │ CRC32C frames       │
+                    │ fsync/group commit  │
+                    └──────────┬──────────┘
+                               │
+                               ▼
+                    ┌─────────────────────┐
+                    │ ledger-core         │
+                    │ deterministic state │
+                    │ machine             │
+                    └──────────┬──────────┘
+                               │
+                               │
+              ┌────────────────┴────────────────┐
+              │                                 │
+              ▼                                 ▼
+    OpenRaft replicated path          Settlement / audit path
+              │                                 │
+              ▼                                 ▼
+     3-node state machine             MMR over settled transfers
+              │                                 │
+              │                                 ▼
+              │                       Solana settlement program
+              │                                 │
+              │                                 ▼
+              │                         Transfer receipts
+              │                                 │
+              └────────────────┬────────────────┘
+                               ▼
+                         Reconciliation
 ```
 
-All simulated time, network message delivery, and disk failures are driven by a seeded PRNG (`rand_chacha::ChaCha8Rng`). If a test fails after 100,000 chaotic events, re-running with the exact same seed reproduces the exact bug every single time:
+The production-style ingress path is intentionally single-writer: a bounded Tokio queue feeds an engine that accumulates commands for up to 512 operations or 2 ms, prepares them against the ledger, persists the resulting events to the WAL with one group commit, and then commits them to memory.
+
+The repository also contains a 3-node OpenRaft implementation whose committed entries are applied sequentially to the same ledger core. The current Raft log store is an in-memory `MemLogStore`; it is intentionally separate from the file-backed WAL used by the ingest engine.
+
+---
+
+## 1. Double-entry ledger
+
+The `ledger-core` crate is the centre of the project.
+
+At its lowest level:
+
+* Asset
+* Liability
+* Equity
+* Revenue
+* Expense
+
+are explicit account types, while balances keep posted and pending amounts separate.
+
+A transfer is represented as:
+
+```text
+Pending  ─────► Posted
+    │
+    └──────────► Voided
+```
+
+Only the legal transitions are accepted by the ledger.
+
+The ledger also keeps an append-only journal of account and transfer events. That journal is the input used to rebuild state through deterministic replay.
+
+### Atomic batch preparation
+
+Batches are first applied speculatively.
+
+The ledger records the pre-image of each affected account or transfer, applies operations against live state, and rolls back the speculative changes if an operation fails. The resulting journal events can then be persisted and committed.
+
+This avoids taking a full copy of the ledger just to get rollback semantics.
+
+---
+
+## 2. Durable write-ahead log
+
+The `wal` crate is an append-only file format designed around a simple guarantee:
+
+> An acknowledged record must survive a crash when synchronous persistence is enabled.
+
+Each record is framed as:
+
+```text
+magic | version | flags | sequence | payload length | payload | CRC32C
+```
+
+The scanner verifies the header, payload length, and checksum for every frame. If the file ends with a torn or corrupt frame, recovery keeps the verified prefix and truncates the damaged tail.
+
+The WAL also supports batched appends. Multiple prepared payloads are encoded into one buffer and committed with a single `sync_data()` call, which makes the durability boundary explicit while avoiding one filesystem sync per transfer.
+
+Recovery is streamed rather than loading the entire log into memory.
+
+---
+
+## 3. Backpressure and micro-batching
+
+A financial system should not respond to overload by allocating memory until the process falls over.
+
+Ingress uses a bounded Tokio `mpsc` queue. When the queue is full, a mutation is rejected immediately with `QueueSaturated` rather than waiting indefinitely or growing the queue.
+
+The engine then collects incoming mutations into short micro-batches:
+
+* **Max batch size:** 512
+* **Max batch delay:** 2 ms
+
+Each batch is prepared against the ledger, encoded as journal events, persisted through the WAL, and then committed.
+
+This separates three concerns that are easy to mix together:
+
+```text
+admission control
+      │
+      ▼
+batch formation
+      │
+      ▼
+durable commit
+```
+
+---
+
+## 4. Replicated state with OpenRaft
+
+The `raft` crate provides a 3-node replicated state-machine path.
+
+A cluster is bootstrapped with three OpenRaft nodes and supports leader discovery, proposals, node isolation, partitions, healing, and node shutdown.
+
+The state machine applies committed Raft entries sequentially to `ledger-core`. Snapshots contain the ledger scale and journal and can rebuild the ledger by replaying those events.
+
+The test transport is deliberately in-memory. That makes it possible to inject partitions and node isolation without depending on an external network.
+
+---
+
+## 5. Cryptographic settlement commitments
+
+The settlement layer uses an incremental Merkle Mountain Range.
+
+Transfers are hashed into leaves, internal nodes are domain-separated, and the current peaks are folded into a single root:
+
+```text
+transfer
+   │
+   ▼
+SHA-256 leaf
+   │
+   ▼
+MMR
+   │
+   ▼
+Merkle root
+```
+
+The hash scheme uses separate prefixes for leaves, internal nodes, and peak bagging:
+
+```text
+leaf  = SHA256(0x00 || data)
+node  = SHA256(0x01 || left || right)
+peak  = SHA256(0x02 || left_peak || right_peak)
+```
+
+This gives incremental append behaviour and logarithmic inclusion proofs.
+
+### Solana settlement program
+
+`crates/solana-settle` contains the Solana program that stores the settlement commitment in a PDA.
+
+The PDA state contains:
+
+* authority
+* epoch
+* batch sequence
+* current MMR root
+* previous root
+* transfer count
+* cumulative settled amount
+* chain tip
+* settlement timestamp
+* bump
+
+Each committed batch must advance the sequence number and, after the first batch, reference the previous root.
+
+The program also exposes an inclusion-verification instruction that checks an MMR proof against the root stored in the PDA.
+
+### What the commitment proves
+
+A valid receipt proves that a transfer leaf is included in the committed MMR root.
+
+It does not by itself prove that the off-chain source data was honest before the root was created. The root is a cryptographic commitment to the dataset supplied by the settlement process.
+
+That distinction is important.
+
+### Transfer receipts
+
+The project can produce a portable JSON receipt containing the transfer identifiers, leaf hash, settlement batch, committed root, and MMR proof.
+
+The standalone verifier can check that proof without running the ledger:
 
 ```bash
-# Run all pre-packaged scenarios (NetworkPartition, CrashTornWrite, ChaosSoak):
-cargo run -p simulator -- --scenario all --steps 200
+cargo run -p solana-settle --bin verifier -- \
+  --receipt path/to/receipt.json
+```
 
-# Fuzz 50 randomized seeds looking for edge cases:
-cargo run -p simulator -- --fuzz 50 --steps 100
+A successful verification exits with code 0.
 
-# Replay an exact failure deterministically:
-cargo run -p simulator -- --seed 42 --scenario soak --steps 500
+*Note on runtime context:* The demo settlement rail currently exercises the Solana program locally through Solana `AccountInfo` structures rather than submitting a real network transaction to a Solana RPC endpoint.
+
+---
+
+## 6. Reconciliation
+
+The demo application keeps a separate payment model from the ledger.
+
+A payment can move through:
+
+```text
+Authorized
+    │
+    ├──► Voided
+    │
+    ▼
+Captured
+    │
+    ▼
+Refunded
+```
+
+The payment record keeps references to the corresponding ledger transfers and the settlement batch.
+
+The reconciliation engine compares:
+
+```text
+application captured total
+            │
+            ├── ledger merchant liability total
+            │
+            └── on-chain settlement total
+```
+
+A mismatch becomes a structured reconciliation incident rather than being silently ignored.
+
+---
+
+## 7. Deterministic failure testing
+
+Traditional unit tests are useful, but they usually explore the failures the author remembered to write down.
+
+TrustLedger also contains a deterministic simulation harness.
+
+The simulator controls:
+
+* virtual time
+* seeded randomness
+* packet delay
+* packet loss
+* duplicate packets
+* network partitions
+* node crashes
+* simulated storage failures
+* recovery and catch-up
+
+The simulated cluster models proposals, acknowledgements, commits, leader changes, and catch-up while the oracle checks financial conservation and replicated-log agreement.
+
+The important property is reproducibility.
+
+A simulation run is identified by a seed:
+
+```bash
+cargo run -p simulator -- \
+  --seed 42 \
+  --scenario all \
+  --steps 200
+```
+
+A failing run can be repeated with the same seed and scenario. The CLI also supports fuzzing across consecutive seeds.
+
+---
+
+## Performance
+
+The latest recorded benchmark run is documented in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+
+### Ledger core
+
+| Workload | Throughput | Median Latency |
+|---|---|---|
+| Immediate transfer | ~4.4M transfers/sec | ~229 ns/op |
+| Pending + post | ~1.6M pairs/sec | ~627 ns/op |
+| apply_batch (256 transfers) | ~3.4M transfers/sec | ~297 ns/op |
+| Journal replay | ~4.9M events/sec | ~206 ns/event |
+
+### Write-Ahead Log (WAL)
+
+| Workload | Throughput |
+|---|---|
+| fsync per batch | ~4.5 MB/s |
+| buffered writes | ~660–780 MB/s |
+| recovery + replay | ~0.5–1.3 GB/s |
+
+### Cryptographic path
+
+| Operation | Recorded result |
+|---|---|
+| MMR append | ~820 ns/leaf |
+| MMR root, 1,024 leaves | ~0.84 ms |
+| Inclusion proof generation | ~4.2 µs |
+| Proof verification | ~3.6 µs |
+
+*These numbers are measurements from the repository's benchmark harnesses, not capacity claims for a production deployment.*
+
+---
+
+## Failure testing results
+
+The deterministic simulation benchmark currently records:
+
+| Scenario | Result |
+|---|---|
+| Network partition | Passed |
+| Leader crash + torn-write recovery | Passed |
+| Chaos soak with packet loss and duplicates | Passed |
+| 100-seed fuzz campaign | 0 recorded invariant violations |
+
+The simulation harness checks wealth conservation and replicated-log agreement while injecting faults into the model.
+
+---
+
+## Workspace
+
+```text
+TrustLedger/
+├── crates/
+│   ├── ledger-core/       # Double-entry accounting state machine
+│   ├── wal/               # Append-only durable log
+│   ├── ingest/            # Bounded ingress + micro-batching
+│   ├── raft/              # OpenRaft replicated state machine
+│   ├── merkle/            # Merkle Mountain Range + proofs
+│   ├── solana-settle/     # Solana settlement program + verifier
+│   └── observability/     # Metrics + Prometheus exposition
+│
+├── apps/
+│   └── demo/              # Payment flow, settlement rail, reconciliation, UI
+│
+├── simulator/             # Deterministic distributed-systems simulator
+│
+├── docs/
+│   ├── adr/               # Architecture decisions
+│   ├── BENCHMARKS.md      # Benchmark methodology and results
+│   ├── failure-modes.md   # Failure-mode analysis
+│   └── OPERATOR-RUNBOOK.md
+│
+└── docker/                # Local multi-node/demo environment
+```
+
+The workspace is split so that the accounting core, persistence, networking, consensus, cryptographic settlement, application demo, and simulation can be tested independently.
+
+---
+
+## Quick start
+
+### Run the demo
+```bash
+cargo run -p demo --bin demo
+```
+
+Then open: `http://127.0.0.1:8080/`
+
+The demo exposes the payment lifecycle, settlement flow, reconciliation, cryptographic verification, and simulation controls.
+
+### Run the test suite
+```bash
+cargo test --workspace
+```
+
+### Run formatting and lint checks
+```bash
+cargo fmt --check
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+### Run the deterministic simulator
+```bash
+cargo run -p simulator -- \
+  --scenario all \
+  --seed 42 \
+  --steps 200
+```
+
+### Run the verifier
+```bash
+cargo run -p solana-settle --bin verifier -- \
+  --receipt path/to/receipt.json
+```
+
+### Run the local cluster environment
+```bash
+docker compose -f docker/docker-compose.yml up -d
 ```
 
 ---
 
-## Testing Matrix
+## Engineering constraints
 
-| Test Suite | File | What it proves |
-|---|---|---|
-| **Rejection Matrix** | `crates/ledger-core/tests/unit.rs` | Double-posts, post-after-void, duplicate IDs, same-account transfers, zero amounts, and backwards timestamps are strictly rejected. |
-| **Property Invariants** | `crates/ledger-core/tests/invariants.rs` | Proptest fuzzing (200 cases per property): shadow model asserts ledger state matches independent balance calculations. |
-| **Byte-Boundary Crash** | `crates/wal/tests/crash.rs` | Truncates log files at **every single byte boundary**, proving recovery lands on the last verified frame without corruption. |
-| **gRPC Backpressure** | `crates/ingest/tests/grpc_e2e.rs` | Full RPC lifecycle, two-phase holds, and high-concurrency burst load shedding (`RESOURCE_EXHAUSTED`). |
-| **Raft Consensus** | `crates/raft/tests/partition.rs` | Network partition survival: minority isolation, majority progression, healing, and zero split-brain. |
-| **Rapid Failover** | `crates/raft/tests/leader_kill.rs` | Leader killed mid-flight; asserts cluster elects new leader and resumes in <0.5s. |
-| **MMR Cryptography** | `crates/merkle/tests/properties.rs` | Inclusion proofs for arbitrary leaf counts, RFC 6962 domain separation, and tamper detection. |
-| **On-Chain Settlement** | `crates/solana-settle/tests/` | PDA initialization, sequential root chaining, and <4k CU on-chain verification. |
-| **Reconciliation** | `apps/demo/tests/e2e.rs` | Two-phase holds, HMAC webhook security, multi-rail settlement, and continuous 3-way reconciliation ($\text{Drift} \equiv \$0.00$). |
+TrustLedger deliberately keeps several constraints visible in the repository:
+
+* **Deterministic money:** Ledger amounts use integer base units with an explicit scale. Arithmetic is checked and returns typed errors on overflow or invalid operations.
+* **Deterministic execution:** The ledger uses ordered maps and a single-writer execution model so that the same event history can be replayed into the same state.
+* **Durable acknowledgement:** The WAL's synchronous mode does not acknowledge the append until the batch has reached the filesystem sync boundary.
+* **Backpressure:** The ingress queue is bounded and rejects work when saturated instead of allowing unbounded buffering.
+* **Unsafe code:** The workspace denies unsafe code, and the observability crate explicitly forbids it.
+* **CI quality gates:** CI checks formatting, clippy with warnings denied, the full workspace test suite, benchmarks, benchmark regression, documentation generation, the Rust 1.80 MSRV, and dependency licensing/source constraints.
 
 ---
 
-## Engineering Standards
+## Trade-offs
 
-* **Zero Panics in Production:** Strictly zero `unwrap()`, `expect()`, `panic!`, `todo!`, or `unimplemented!` on production code paths.
-* **Deny Unsafe Code:** Core ledger and consensus crates enforce `#![deny(unsafe_code)]`.
-* **Clean Invariant Comments:** Code comments explain *why* (invariants, recovery logic, failure models), never *what* (syntax narration).
-* **MSRV & Supply-Chain Checks:** Minimum Supported Rust Version (1.80) pinned and checked in CI. `cargo-deny` validates licenses (MIT / Apache-2.0 only), security advisories, and banned crates.
+TrustLedger is intentionally opinionated. The main trade-offs are:
 
----
-
-## Architecture Decision Records (ADRs)
-
-Every major design decision is recorded under [`docs/adr/`](docs/adr/):
-
-| ADR | Title | Decision Summary |
-|---|---|---|
-| [ADR-0001](docs/adr/ADR-0001-scale-and-amount-representation.md) | Scale & Amount Representation | Fixed-point `u128` integer math with scale metadata; eliminates floating-point drift. |
-| [ADR-0002](docs/adr/ADR-0002-btreemap-for-deterministic-state.md) | BTreeMap for Determinism | Replaces `HashMap` with `BTreeMap` to guarantee byte-for-byte deterministic log replay. |
-| [ADR-0003](docs/adr/ADR-0003-wire-and-journal-serialization.md) | Postcard for Serialization | Compact, zero-overhead binary serialization for write-ahead log frames. |
-| [ADR-0004](docs/adr/ADR-0004-available-balance-semantics.md) | Non-Negative Balance Math | `available_balance` never returns negative numbers; typed `InsufficientFunds` errors. |
-| [ADR-0005](docs/adr/ADR-0005-property-testing-with-proptest.md) | Property-Based Invariant Testing | Proptest shadow model verifying debits equal credits across randomized mutations. |
-| [ADR-0006](docs/adr/ADR-0006-event-sourcing-and-journal-structure.md) | Event Sourcing & In-Memory State | Event-sourced mutation log separating pure in-memory state from disk I/O. |
-| [ADR-0007](docs/adr/ADR-0007-wal-crash-recovery-and-framing.md) | WAL Framing & Torn-Write Recovery | CRC32C-checksummed frames with truncation to last verified record on restart. |
-| [ADR-0008](docs/adr/ADR-0008-ci-benchmarks-and-supply-chain-policy.md) | Benchmarks & Supply Chain Policy | Criterion automated regression gate in CI and `cargo-deny` dependency validation. |
-| [ADR-0009](docs/adr/ADR-0009-raft-consensus-and-cluster-replication.md) | Raft Distributed Consensus | 3-node OpenRaft cluster with simulated network router and <0.5s failover SLO. |
-| [ADR-0010](docs/adr/ADR-0010-solana-settlement-pda-and-merkle-proofs.md) | Solana Settlement PDA & MMR Proofs | On-chain Merkle Mountain Range root commitment to Solana PDA in <4,000 CUs. |
-| [ADR-0011](docs/adr/ADR-0011-three-way-continuous-reconciliation.md) | Three-Way Continuous Reconciliation | Real-time automated audit across Ingress, Double-Entry Books, and Solana L1. |
-| [ADR-0012](docs/adr/ADR-0012-deterministic-simulation-testing.md) | Deterministic Simulation Testing (DST) | Discrete-event virtual time harness with seeded PRNG chaos fault injection. |
+1. **Single-writer execution:** Simplifies ordering and removes SQL row-lock contention from the accounting hot path, but writes must pass through that execution model.
+2. **File-backed WAL:** Gives clear durability semantics, but synchronous filesystem commits have real physical latency.
+3. **OpenRaft replication:** Adds failure tolerance and ordering at the cost of network coordination.
+4. **MMR state:** Gives cheap incremental appends and small inclusion proofs, but retaining the full node structure uses memory as the number of leaves grows.
+5. **Off-chain accounting with on-chain commitments:** Keeps the ledger fast and practical while making selected settlement state externally auditable, but the chain commitment is still a commitment to off-chain data rather than an independent re-execution of every debit and credit.
 
 ---
 
-## Operator Runbooks
+## Further reading
 
-* **[WAL Runbook](docs/WAL-RUNBOOK.md)**: Handling disk exhaustion, torn-write recovery, snapshot bit rot, and emergency log truncation.
-* **[Production Runbook](docs/OPERATOR-RUNBOOK.md)**: Deployment guidelines, cluster bootstrap, Prometheus alerts, and reconciliation drift triage.
-* **[Failure Modes (FMEA)](docs/failure-modes.md)**: Hardware failure analysis, network partition behavior, and mitigations.
-* **[Benchmarks](docs/BENCHMARKS.md)**: Detailed Criterion latency percentiles and statistical methodology.
+The repository keeps the deeper reasoning separate from the README:
+
+* [Core ledger ADR](docs/adr/ADR-0001-scale-and-amount-representation.md)
+* [WAL persistence ADR](docs/adr/ADR-0007-wal-crash-recovery-and-framing.md)
+* [Distributed consensus ADR](docs/adr/ADR-0009-raft-consensus-and-cluster-replication.md)
+* [MMR and Solana settlement ADR](docs/adr/ADR-0010-solana-settlement-pda-and-merkle-proofs.md)
+* [Benchmarks](docs/BENCHMARKS.md)
+* [Failure modes (FMEA)](docs/failure-modes.md)
+* [Operator runbook](docs/OPERATOR-RUNBOOK.md)
 
 ---
 
-## License
+## Status
 
-Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE) at your option.
+TrustLedger is an engineering project focused on financial correctness, durability, distributed-state behaviour, cryptographic commitments, and failure testing.
+
+It is intentionally designed so that the important properties can be inspected in code, tested, benchmarked, and reproduced.
