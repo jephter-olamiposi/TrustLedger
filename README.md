@@ -59,25 +59,25 @@ Authorization
 
 The ledger models that lifecycle directly.
 
-A pending transfer reserves funds. It can later be posted, including a partial capture, or voided to release the reservation. Once posted or voided, the pending transfer is terminal.
+A pending transfer is a temporary hold on funds. It can later be posted, including as a partial capture, or voided to release the hold. After it is posted or voided, it cannot change again.
 
 ---
 
 ## Why the core is designed this way
 
-Financial state is a poor place for implicit rules.
+Financial state is a poor place for hidden rules. The ledger should make it clear what happened, what is allowed next, and whether money was conserved.
 
-TrustLedger makes several of those rules explicit in the data model and execution path:
+TrustLedger makes those rules explicit in the data model and execution path:
 
-* Monetary values use `Amount(u128)` with an explicit decimal `Scale`; floating-point values are not used for ledger arithmetic.
-* Accounts have explicit accounting types such as asset, liability, equity, revenue, and expense.
-* Posted and pending debits and credits are tracked separately.
-* Transfers cannot debit and credit the same account or use a zero amount.
-* Pending transfers can only move to Posted or Voided.
-* The ledger checks conservation of posted and pending debits and credits and verifies that pending balances match the transfer index.
-* Mutations use a compute-then-write approach. Batch preparation uses an undo log so speculative state can be rolled back without cloning the whole ledger.
+* Money uses integer base units and an explicit decimal scale instead of floating-point numbers.
+* Accounts have clear accounting types such as asset, liability, equity, revenue, and expense.
+* Posted money and temporarily held money are tracked separately.
+* A transfer cannot move money from an account back to itself or use a zero amount.
+* A pending transfer can only become `Posted` or `Voided`.
+* The ledger checks that every debit and credit is balanced and that held balances match the transfers that created them.
+* A batch is calculated before it is permanently written. If the calculation fails, an undo log restores the earlier state without copying the entire ledger.
 
-The result is a small accounting core that is easy to replay and reason about.
+The result is a compact accounting core that can be replayed and checked after a restart.
 
 ### Code example
 
@@ -165,15 +165,15 @@ TrustLedger currently has two main execution paths around the same ledger core.
                          Reconciliation
 ```
 
-The ingress path is intentionally single-writer: a bounded Tokio queue feeds an engine that accumulates commands for up to 512 operations or 2 ms, prepares them against the ledger, persists the resulting events to the WAL with one group commit, and then commits them to memory.
+The ingress path is intentionally single-writer: one engine applies ledger changes in a known order. A bounded Tokio queue limits how much work can wait in memory, and the engine groups up to 512 operations or 2 ms of work before writing them together.
 
-The repository also contains a 3-node OpenRaft implementation whose committed entries are applied sequentially to the same ledger core. The current Raft log store is an in-memory `MemLogStore`; it is intentionally separate from the file-backed WAL used by the ingest engine.
+The repository also contains a 3-node OpenRaft implementation. Once a change is agreed by the cluster, each node applies it to the same ledger core in the same order. The current Raft log store is an in-memory `MemLogStore`; it is separate from the file-backed WAL used by the ingest engine.
 
 ---
 
 ## 1. Double-entry ledger
 
-The `ledger-core` crate is the centre of the project.
+The `ledger-core` crate is the centre of the project. It owns the accounting rules and is the place where balances are changed.
 
 At its lowest level:
 
@@ -195,21 +195,21 @@ Pending  ─────► Posted
 
 Only the legal transitions are accepted by the ledger.
 
-The ledger also keeps an append-only journal of account and transfer events. That journal is the input used to rebuild state through deterministic replay.
+The ledger also keeps an append-only journal of account and transfer events. The journal is a history of what happened, so the system can rebuild the same balances by replaying it in order.
 
 ### Atomic batch preparation
 
-Batches are first applied speculatively.
+Batches are first tested speculatively, meaning the ledger tries the whole batch before accepting it permanently.
 
-The ledger records the pre-image of each affected account or transfer, applies operations against live state, and rolls back the speculative changes if an operation fails. The resulting journal events can then be persisted and committed.
+The ledger records the previous value of each affected account or transfer, applies the operations, and restores those previous values if one operation fails. Only a successful batch produces journal events that are written and committed.
 
-This avoids taking a full copy of the ledger just to get rollback semantics.
+This provides rollback without copying the entire ledger for every batch.
 
 ---
 
 ## 2. Durable write-ahead log
 
-The `wal` crate is an append-only file format designed around a simple guarantee:
+The `wal` crate is the ledger's durable journal. It is an append-only file designed around a simple guarantee:
 
 > An acknowledged record must survive a crash when synchronous persistence is enabled.
 
@@ -219,28 +219,28 @@ Each record is framed as:
 magic | version | flags | sequence | payload length | payload | CRC32C
 ```
 
-The scanner verifies the header, payload length, and checksum for every frame. If the file ends with a torn or corrupt frame, recovery keeps the verified prefix and truncates the damaged tail.
+Each record has a header, the saved data, and a CRC32C checksum. On restart, the scanner checks every record. If a crash left a partial record at the end, recovery keeps the verified history and removes only the damaged tail.
 
-The WAL also supports batched appends. Multiple prepared payloads are encoded into one buffer and committed with a single `sync_data()` call, which makes the durability boundary explicit while avoiding one filesystem sync per transfer.
+The WAL also supports batched appends. Several prepared payloads can be written together and committed with one `sync_data()` call, reducing the cost of syncing the filesystem for every individual transfer.
 
-Recovery is streamed rather than loading the entire log into memory.
+Recovery reads the file a piece at a time instead of loading the entire log into memory.
 
 ---
 
 ## 3. Backpressure and micro-batching
 
-A financial system should not respond to overload by allocating memory until the process falls over.
+A financial system should not respond to heavy traffic by accepting unlimited work until the process runs out of memory.
 
-Ingress uses a bounded Tokio `mpsc` queue. When the queue is full, a mutation is rejected immediately with `QueueSaturated` rather than waiting indefinitely or growing the queue.
+Ingress uses a bounded Tokio `mpsc` queue. When the queue is full, a new mutation fails immediately with `QueueSaturated` instead of waiting forever or growing memory without a limit.
 
-The engine then collects incoming mutations into short micro-batches:
+The engine then collects incoming mutations into short micro-batches, which means several small requests are processed together:
 
 * **Max batch size:** 512
 * **Max batch delay:** 2 ms
 
 Each batch is prepared against the ledger, encoded as journal events, persisted through the WAL, and then committed.
 
-This separates three concerns that are easy to mix together:
+This separates three decisions:
 
 ```text
 admission control
@@ -256,21 +256,21 @@ durable commit
 
 ## 4. Replicated state with OpenRaft
 
-The `raft` crate provides a 3-node replicated state-machine path.
+The `raft` crate provides a 3-node replicated state-machine path. In plain terms, the nodes agree on the order of changes before applying them.
 
-A cluster is bootstrapped with three OpenRaft nodes and supports leader discovery, proposals, node isolation, partitions, healing, and node shutdown.
+A cluster starts with three OpenRaft nodes and supports leader discovery, proposals, node isolation, network partitions, recovery after healing, and node shutdown.
 
-The state machine applies committed Raft entries sequentially to `ledger-core`. Snapshots contain the ledger scale and journal and can rebuild the ledger by replaying those events.
+The state machine applies approved Raft entries one at a time to `ledger-core`. Snapshots contain the ledger scale and journal, allowing a node to rebuild its state without processing every network message again.
 
-The test transport is deliberately in-memory. That makes it possible to inject partitions and node isolation without depending on an external network.
+The test network runs in memory. This makes it possible to simulate partitions and isolated nodes without needing three real servers.
 
 ---
 
 ## 5. Cryptographic settlement commitments
 
-The settlement layer uses an incremental Merkle Mountain Range.
+The settlement layer uses an incremental Merkle Mountain Range, or MMR. An MMR groups transfer hashes into a compact tree that can be extended as new transfers are settled.
 
-Transfers are hashed into leaves, internal nodes are domain-separated, and the current peaks are folded into a single root:
+Each transfer becomes a SHA-256 leaf. Different prefixes are used for leaves, internal nodes, and the final peak combination so the same bytes cannot be confused as different kinds of tree data. The current peaks are folded into one root:
 
 ```text
 transfer
@@ -293,13 +293,13 @@ node  = SHA256(0x01 || left || right)
 peak  = SHA256(0x02 || left_peak || right_peak)
 ```
 
-This gives incremental append behaviour and logarithmic inclusion proofs.
+This allows new transfers to be added efficiently and produces small inclusion proofs. An inclusion proof lets someone check that a particular transfer belongs to a committed batch without downloading the entire batch.
 
 ### Solana settlement program
 
-`crates/solana-settle` contains the Solana program that stores the settlement commitment in a PDA.
+`crates/solana-settle` contains the Solana program that stores the settlement commitment in a PDA, a program-owned account on Solana.
 
-The PDA state contains:
+The account stores:
 
 * authority
 * epoch
@@ -312,21 +312,21 @@ The PDA state contains:
 * settlement timestamp
 * bump
 
-Each committed batch must advance the sequence number and, after the first batch, reference the previous root.
+Each committed batch must advance the sequence number and, after the first batch, refer to the previous root. This links batches into a verifiable chain.
 
-The program also exposes an inclusion-verification instruction that checks an MMR proof against the root stored in the PDA.
+The program also exposes an instruction that checks an MMR proof against the root stored in the account.
 
 ### What the commitment proves
 
-A valid receipt proves that a transfer leaf is included in the committed MMR root.
+A valid receipt proves that a transfer's hash is included in the committed MMR root.
 
-It does not by itself prove that the off-chain source data was honest before the root was created. The root is a cryptographic commitment to the dataset supplied by the settlement process.
+It does not prove that the off-chain data was honest before the root was created. It proves that the transfer is included in the exact dataset that the settlement process committed.
 
 That distinction is important.
 
 ### Transfer receipts
 
-The project can produce a portable JSON receipt containing the transfer identifiers, leaf hash, settlement batch, committed root, and MMR proof.
+The project can produce a portable JSON receipt containing the transfer IDs, transfer hash, settlement batch, committed root, and inclusion proof.
 
 The standalone verifier can check that proof without running the ledger:
 
@@ -343,7 +343,7 @@ A successful verification exits with code 0.
 
 ## 6. Reconciliation
 
-The demo application keeps a separate payment model from the ledger.
+The demo application keeps a payment record alongside the ledger. The two models are linked by transfer IDs and settlement batch IDs.
 
 A payment can move through:
 
@@ -359,9 +359,9 @@ Captured
 Refunded
 ```
 
-The payment record keeps references to the corresponding ledger transfers and the settlement batch.
+The payment record keeps references to the corresponding ledger transfers and settlement batch.
 
-The reconciliation engine compares:
+The reconciliation engine compares three views of the same money:
 
 ```text
 application captured total
@@ -371,13 +371,13 @@ application captured total
             └── on-chain settlement total
 ```
 
-A mismatch becomes a structured reconciliation incident rather than being silently ignored.
+If the totals do not match, the application creates a reconciliation incident instead of silently accepting the difference.
 
 ---
 
 ## 7. Deterministic failure testing
 
-Traditional unit tests are useful, but they usually explore the failures the author remembered to write down.
+Traditional unit tests are useful, but they usually cover only the failure cases someone explicitly wrote as tests.
 
 TrustLedger also contains a deterministic simulation harness.
 
@@ -393,9 +393,9 @@ The simulator controls:
 * simulated storage failures
 * recovery and catch-up
 
-The simulated cluster models proposals, acknowledgements, commits, leader changes, and catch-up while the oracle checks financial conservation and replicated-log agreement.
+The simulated cluster models proposals, acknowledgements, commits, leader changes, and catch-up. At each step, checks confirm that money is conserved and that the active nodes agree on their committed history.
 
-The important property is reproducibility.
+The important property is reproducibility: the same seed produces the same failure schedule.
 
 A simulation run is identified by a seed:
 
@@ -412,7 +412,7 @@ A failing run can be repeated with the same seed and scenario. The CLI also supp
 
 ## Performance
 
-The latest recorded benchmark run is documented in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+The recorded benchmark results are documented in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md). They are reference measurements, not promises about production capacity.
 
 ### Ledger core
 
@@ -486,7 +486,7 @@ TrustLedger/
 └── docker/                # Local multi-node/demo environment
 ```
 
-The workspace is split so that the accounting core, persistence, networking, consensus, cryptographic settlement, application demo, and simulation can be tested independently.
+The workspace is split so the accounting, storage, networking, consensus, settlement, demo, and simulation code can be tested separately.
 
 ---
 
@@ -499,7 +499,7 @@ cargo run -p demo --bin demo
 
 Then open: `http://127.0.0.1:8080/`
 
-The demo exposes the payment lifecycle, settlement flow, reconciliation, cryptographic verification, and simulation controls.
+The demo shows the payment lifecycle, settlement flow, reconciliation, proof verification, and simulation controls.
 
 ### Run the test suite
 ```bash
@@ -535,26 +535,26 @@ docker compose -f docker/docker-compose.yml up -d
 
 ## Engineering constraints
 
-TrustLedger deliberately keeps several constraints visible in the repository:
+These are the main engineering rules behind the project:
 
-* **Deterministic money:** Ledger amounts use integer base units with an explicit scale. Arithmetic is checked and returns typed errors on overflow or invalid operations.
-* **Deterministic execution:** The ledger uses ordered maps and a single-writer execution model so that the same event history can be replayed into the same state.
-* **Durable acknowledgement:** The WAL's synchronous mode does not acknowledge the append until the batch has reached the filesystem sync boundary.
-* **Backpressure:** The ingress queue is bounded and rejects work when saturated instead of allowing unbounded buffering.
-* **Unsafe code:** The workspace denies unsafe code, and the observability crate explicitly forbids it.
-* **CI quality gates:** CI checks formatting, clippy with warnings denied, the full workspace test suite, benchmarks, benchmark regression, documentation generation, the Rust 1.80 MSRV, and dependency licensing/source constraints.
+* **Exact money:** Amounts use integer base units and an explicit scale. Arithmetic checks for overflow and invalid operations.
+* **Repeatable execution:** Ordered data structures and one writer make it possible to replay the same history into the same state.
+* **Durable acknowledgement:** In synchronous mode, the WAL does not acknowledge a write until it reaches the filesystem sync boundary.
+* **Bounded work:** The ingress queue rejects new work when full instead of buffering without a limit.
+* **No unsafe code:** The workspace rejects unsafe Rust code.
+* **Automated checks:** CI runs formatting, clippy, tests, benchmarks, documentation generation, the Rust 1.80 compatibility check, and dependency license/source checks.
 
 ---
 
 ## Trade-offs
 
-TrustLedger is intentionally opinionated. The main trade-offs are:
+Every design choice has a cost. The main trade-offs are:
 
-1. **Single-writer execution:** Simplifies ordering and removes SQL row-lock contention from the accounting hot path, but writes must pass through that execution model.
-2. **File-backed WAL:** Gives clear durability semantics, but synchronous filesystem commits have real physical latency.
-3. **OpenRaft replication:** Adds failure tolerance and ordering at the cost of network coordination.
-4. **MMR state:** Gives cheap incremental appends and small inclusion proofs, but retaining the full node structure uses memory as the number of leaves grows.
-5. **Off-chain accounting with on-chain commitments:** Keeps the ledger fast and practical while making selected settlement state externally auditable, but the chain commitment is still a commitment to off-chain data rather than an independent re-execution of every debit and credit.
+1. **One writer:** Makes ordering easier to reason about, but all writes pass through that writer.
+2. **File-backed WAL:** Gives clear recovery behavior, but synchronous filesystem commits take real time.
+3. **OpenRaft replication:** Helps the system survive node failures, but nodes must communicate and reach agreement.
+4. **MMR state:** Makes appends and proofs efficient, but storing the full tree uses more memory as the number of transfers grows.
+5. **Off-chain accounting with on-chain commitments:** Keeps accounting practical while making selected settlement data auditable, but the blockchain commitment does not independently recalculate every debit and credit.
 
 ---
 
