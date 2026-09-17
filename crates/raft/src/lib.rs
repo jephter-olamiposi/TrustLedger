@@ -1,4 +1,4 @@
-//! Distributed consensus layer for TrustLedger powered by OpenRaft.
+//! OpenRaft-backed replication layer for TrustLedger.
 
 #![deny(missing_docs)]
 #![deny(unsafe_code)]

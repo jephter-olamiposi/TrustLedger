@@ -1,13 +1,8 @@
-//! FoundationDB/TigerBeetle-style Deterministic Simulation Testing (DST) for TrustLedger.
+//! Deterministic simulation harness for consensus, storage faults, and ledger invariants.
 //!
-//! Provides a fully virtualized, discrete-event simulated environment including:
-//! - Deterministic pseudo-random number generator (`SimRng`).
-//! - Discrete virtual time scheduler (`SimClock`, `SimInstant`).
-//! - Virtual network with packet delays, drops, duplicates, and partitions (`SimNetwork`).
-//! - Virtual storage with un-fsynced write loss and torn-write fault injection (`SimDisk`).
-//! - Multi-node consensus state machine cluster (`SimCluster`).
-//! - Synthetic double-entry payment workload generator (`WorkloadGenerator`).
-//! - Invariant checking oracle enforcing total wealth conservation and log agreement (`Oracle`).
+//! The simulator provides a virtual clock, virtual network, fault-injected storage, and
+//! workload generators so cluster failures and financial invariants can be tested under
+//! reproducible conditions.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]

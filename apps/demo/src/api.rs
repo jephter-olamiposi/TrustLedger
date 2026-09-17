@@ -1,4 +1,4 @@
-//! HTTP API handlers for payments, webhooks, settlement batches, and reconciliation.
+//! HTTP handlers for demo ledger operations and reconciliation flows.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};

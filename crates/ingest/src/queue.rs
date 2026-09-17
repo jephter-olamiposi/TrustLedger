@@ -175,7 +175,7 @@ pub(crate) enum IngestCommand {
     },
 }
 
-// Invariant: monotonic timestamps guarantee event causality even under backward wall-clock adjustments.
+/// Normalize ledger timestamps to a monotonic watermark so replay and ordering stay stable even when a caller clock moves backwards.
 fn allocate_timestamp(requested: u64, watermark: &mut u64) -> u64 {
     if requested == 0 {
         let now = std::time::SystemTime::now()

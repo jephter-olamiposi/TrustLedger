@@ -1,7 +1,4 @@
-//! TrustLedger Deterministic Simulation Testing (DST) runner binary.
-//!
-//! Executes FoundationDB/TigerBeetle-style seeded pseudo-random chaos simulations
-//! proving financial wealth conservation and consensus linearizability.
+//! Simulator entrypoint for deterministic consensus and fault-injection runs.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]

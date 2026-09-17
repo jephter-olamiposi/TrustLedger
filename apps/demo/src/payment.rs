@@ -1,4 +1,4 @@
-//! Payment domain model, lifecycle state machine, and double-entry ledger integration.
+//! Payment lifecycle and ledger integration for the demo app.
 
 use ledger_core::account::{AccountFlags, AccountType};
 use ledger_core::amount::{Amount, Scale};

@@ -1,4 +1,4 @@
-//! Webhook ingestion with HMAC-SHA256 signature verification, replay protection, and deduplication.
+//! Webhook verification, freshness checks, and idempotent replay protection.
 
 use std::collections::HashSet;
 use std::sync::RwLock;

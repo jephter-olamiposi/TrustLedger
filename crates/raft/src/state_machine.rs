@@ -1,7 +1,7 @@
-//! Replicated state machine wrapping TrustLedger's double-entry core.
+//! Applies committed Raft entries to the ledger core.
 //!
-//! Applies committed Raft log entries sequentially to maintain strict
-//! single-writer consistency and balance conservation invariants.
+//! The state machine keeps the replicated log and the ledger in sync and preserves the
+//! same balance and ordering invariants as the single-writer path.
 
 use std::io::Cursor;
 use std::sync::Arc;

@@ -25,10 +25,11 @@ pub struct Histogram {
 
 impl Histogram {
     /// Creates a new histogram with metric name, documentation, and upper bound thresholds.
+    ///
+    /// Buckets are normalized into ascending order so cumulative counts remain Prometheus-compatible.
     #[must_use]
     pub fn new(name: &'static str, help: &'static str, buckets: &[f64]) -> Self {
         let mut sorted = buckets.to_vec();
-        // Invariant: Prometheus requires cumulative buckets to be sorted in strictly ascending order.
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
         let bucket_counts = (0..sorted.len()).map(|_| AtomicU64::new(0)).collect();

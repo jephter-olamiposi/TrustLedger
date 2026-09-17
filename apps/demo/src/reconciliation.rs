@@ -1,4 +1,4 @@
-//! Three-way reconciliation engine: App Payments vs Ledger Journal vs Solana On-Chain Roots.
+//! Reconciliation between app state, ledger entries, and on-chain roots.
 
 use ledger_core::Ledger;
 use serde::{Deserialize, Serialize};

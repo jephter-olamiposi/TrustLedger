@@ -262,7 +262,6 @@ impl Engine {
                     payloads.push(payload);
                 }
 
-                // Invariant: group commit persists all prepared events in a single append and fsync.
                 if let Err(wal_err) = self.wal.append_batch(&payloads) {
                     let ingest_err = IngestError::from(wal_err);
                     for resp in successful_responders {

@@ -1,4 +1,4 @@
-//! Settlement rail adapters: Mock ACH fiat batching and Solana USDC on-chain settlement.
+//! Settlement adapters for mock ACH and Solana USDC flows.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
