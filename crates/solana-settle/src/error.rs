@@ -36,6 +36,10 @@ pub enum SettlementProgramError {
     #[error("empty settlement batch: transfer count must be greater than zero")]
     EmptyBatch,
 
+    /// The cumulative settled amount would exceed the on-chain `u128` range.
+    #[error("cumulative settled amount overflow")]
+    TotalSettledAmountOverflow,
+
     /// The Merkle inclusion proof failed verification against the committed batch root.
     #[error("merkle inclusion proof failed: {0}")]
     InclusionProofFailed(String),
@@ -61,6 +65,7 @@ impl From<SettlementProgramError> for ProgramError {
             SettlementProgramError::InvalidBatchSequence { .. } => Self::Custom(1001),
             SettlementProgramError::PreviousRootMismatch { .. } => Self::Custom(1002),
             SettlementProgramError::EmptyBatch => Self::Custom(1003),
+            SettlementProgramError::TotalSettledAmountOverflow => Self::Custom(1005),
             SettlementProgramError::InclusionProofFailed(_) => Self::Custom(1004),
             SettlementProgramError::DeserializationError(_) => Self::InvalidInstructionData,
             SettlementProgramError::SerializationError(_) => Self::AccountDataTooSmall,

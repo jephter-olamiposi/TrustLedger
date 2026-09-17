@@ -57,12 +57,10 @@ impl Processor {
         let authority_info = next_account_info(account_info_iter)?;
         let pda_info = next_account_info(account_info_iter)?;
 
-        // Invariant: The authority must be a signer.
         if !authority_info.is_signer {
             return Err(SettlementProgramError::UnauthorizedSigner.into());
         }
 
-        // Invariant: PDA address must match canonical seeds.
         let expected_pda = Pubkey::create_program_address(
             &[
                 SettlementRoot::PDA_SEED,
@@ -166,7 +164,8 @@ impl Processor {
         current_root.transfer_count = params.transfer_count;
         current_root.total_settled_amount = current_root
             .total_settled_amount
-            .saturating_add(params.total_settled_amount);
+            .checked_add(params.total_settled_amount)
+            .ok_or(SettlementProgramError::TotalSettledAmountOverflow)?;
         current_root.chain_tip = params.chain_tip;
         current_root.settled_at = timestamp;
 

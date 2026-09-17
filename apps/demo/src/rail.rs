@@ -1,5 +1,6 @@
 //! Settlement rail adapters: Mock ACH fiat batching and Solana USDC on-chain settlement.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
 
 use ledger_core::transfer::Transfer;
@@ -71,7 +72,9 @@ impl SettlementRail for MockAchRail {
     ) -> Result<RailSubmission, RailError> {
         let mut total_amount: u128 = 0;
         for t in transfers {
-            total_amount = total_amount.saturating_add(t.amount().as_u128());
+            total_amount = total_amount
+                .checked_add(t.amount().as_u128())
+                .ok_or(RailError::AmountOverflow)?;
         }
 
         let reference = format!("ACH-NACHA-BATCH-{batch_seq:06}");
@@ -93,6 +96,8 @@ pub struct SolanaUsdcRail {
     authority: Pubkey,
     pda_data: RwLock<Vec<u8>>,
     latest_mmr: RwLock<MerkleMountainRange>,
+    settled_transfers: RwLock<Vec<Transfer>>,
+    batch_seq: AtomicU64,
 }
 
 impl SolanaUsdcRail {
@@ -153,7 +158,76 @@ impl SolanaUsdcRail {
             authority,
             pda_data: RwLock::new(pda_data),
             latest_mmr: RwLock::new(MerkleMountainRange::new()),
+            settled_transfers: RwLock::new(Vec::new()),
+            batch_seq: AtomicU64::new(0),
         })
+    }
+
+    /// Return the authority public key.
+    #[must_use]
+    pub const fn authority(&self) -> Pubkey {
+        self.authority
+    }
+
+    /// Return the PDA address derived from authority and program id.
+    #[must_use]
+    pub fn pda_address(&self) -> Pubkey {
+        let (pda, _) = SettlementRoot::find_pda(&self.authority, &self.program_id);
+        pda
+    }
+
+    /// Return current settlement root state if initialized and batch_seq > 0.
+    #[must_use]
+    pub fn current_settlement_root(&self) -> Option<SettlementRoot> {
+        let guard = self.pda_data.read().ok()?;
+        let state = SettlementRoot::deserialize_from(&guard).ok()?;
+        if state.batch_seq == 0 {
+            None
+        } else {
+            Some(state)
+        }
+    }
+
+    /// Return the latest committed Merkle root hex string, if any.
+    #[must_use]
+    pub fn latest_root_hex(&self) -> Option<String> {
+        self.current_settlement_root().map(|state| {
+            state
+                .merkle_root
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        })
+    }
+
+    /// Return transfer receipt and cryptographic proof for a transfer ID if settled in the latest batch.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RailError`] if no batch has been settled or transfer is not found.
+    pub fn receipt_for_transfer(&self, transfer_id: u128) -> Result<TransferReceipt, RailError> {
+        let transfers = self
+            .settled_transfers
+            .read()
+            .map_err(|_| RailError::SubmissionFailed("lock poisoned".to_string()))?;
+
+        let batch_seq = self.batch_seq.load(Ordering::SeqCst);
+        if transfers.is_empty() || batch_seq == 0 {
+            return Err(RailError::SubmissionFailed(
+                "No settlement batch has been committed to Solana yet".to_string(),
+            ));
+        }
+
+        let index = transfers
+            .iter()
+            .position(|t| t.id().as_u128() == transfer_id)
+            .ok_or_else(|| {
+                RailError::SubmissionFailed(format!(
+                    "Transfer {transfer_id} not found in latest Solana settlement batch"
+                ))
+            })?;
+
+        self.generate_receipt(batch_seq, index, &transfers[index])
     }
 
     /// Generate an inclusion proof and receipt for a specific transfer in the latest settled batch.
@@ -209,7 +283,9 @@ impl SettlementRail for SolanaUsdcRail {
 
         for t in transfers {
             mmr.append_transfer(t)?;
-            total_amount = total_amount.saturating_add(t.amount().as_u128());
+            total_amount = total_amount
+                .checked_add(t.amount().as_u128())
+                .ok_or(RailError::AmountOverflow)?;
         }
 
         let root = mmr.root();
@@ -270,6 +346,11 @@ impl SettlementRail for SolanaUsdcRail {
         if let Ok(mut mmr_guard) = self.latest_mmr.write() {
             *mmr_guard = mmr;
         }
+
+        if let Ok(mut transfers_guard) = self.settled_transfers.write() {
+            *transfers_guard = transfers.to_vec();
+        }
+        self.batch_seq.store(batch_seq, Ordering::SeqCst);
 
         let reference = format!("solana:tx:batch-{batch_seq}:root:{}", root.to_hex());
 

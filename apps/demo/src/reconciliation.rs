@@ -71,23 +71,31 @@ impl ReconciliationEngine {
 
         for p in payments {
             if p.state == PaymentState::Captured {
-                app_total = app_total.saturating_add(p.amount);
+                app_total = app_total
+                    .checked_add(p.amount)
+                    .ok_or(ReconciliationError::AmountOverflow)?;
                 captured_count += 1;
             }
         }
 
-        // In double-entry accounting, merchant accounts are liabilities whose gross credits represent settled funds.
+        // Merchant liabilities carry settled funds as credits.
         let mut ledger_total: u128 = 0;
         for &m_id in merchants {
             let acc_id = AccountDirectory::merchant(m_id);
             let acc = ledger
                 .get_account(acc_id)
                 .map_err(|_| ReconciliationError::AccountNotFound(acc_id.as_u128()))?;
-            ledger_total = ledger_total.saturating_add(acc.balance.credits_posted.as_u128());
+            ledger_total = ledger_total
+                .checked_add(acc.balance.credits_posted.as_u128())
+                .ok_or(ReconciliationError::AmountOverflow)?;
         }
 
         let chain_total = chain_root.map(|r| r.total_settled_amount).unwrap_or(0);
-        let drift: i128 = (ledger_total as i128) - (app_total as i128);
+        let ledger_total_signed = i128::try_from(ledger_total)
+            .map_err(|_| ReconciliationError::AmountExceedsSignedRange)?;
+        let app_total_signed =
+            i128::try_from(app_total).map_err(|_| ReconciliationError::AmountExceedsSignedRange)?;
+        let drift = ledger_total_signed - app_total_signed;
 
         let is_clean = drift == 0 && (chain_root.is_none() || chain_total == ledger_total);
 

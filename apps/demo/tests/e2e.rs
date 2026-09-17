@@ -19,7 +19,7 @@ fn test_payment_lifecycle_two_phase_holds() {
 
     let merchant_id = 1;
     let customer_id = 101;
-    let initial_balance = 1_000_000u128; // $1,000.00 seeded
+    let initial_balance = 1_000_000_000u128; // $1,000.00 seeded
 
     let payment_id = state.next_payment_id.fetch_add(1, Ordering::SeqCst) as u128;
     let hold_id = state.next_transfer_id.fetch_add(1, Ordering::SeqCst) as u128;
@@ -301,6 +301,65 @@ async fn test_http_api_smoke_and_dashboard() {
     assert!(metrics_resp.contains("trustledger_reconciliation_drift_gauge"));
 }
 
+#[tokio::test]
+async fn test_interactive_dashboard_api_endpoints() {
+    let secret = b"interactive-ui-test-secret".to_vec();
+    let state = Arc::new(AppState::new(secret).expect("app state"));
+    let app = demo::api::router(state);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral port");
+    let addr = listener.local_addr().expect("local addr");
+
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let dash_resp = reqwest_or_hyper(addr, "/api/dashboard/data").await;
+    assert!(dash_resp.contains("HTTP/1.1 200 OK"));
+    assert!(dash_resp.contains("\"accounts\":["));
+    assert!(dash_resp.contains("\"solana_pda\":"));
+
+    let seed_resp = post_json(addr, "/api/payments/quick-seed", "{}").await;
+    assert!(seed_resp.contains("HTTP/1.1 200 OK"));
+    assert!(seed_resp.contains("\"seeded_count\":4"));
+
+    let batch_resp = post_json(addr, "/api/settlement/batch", r#"{"rail":"Solana-USDC"}"#).await;
+    assert!(batch_resp.contains("HTTP/1.1 200 OK"));
+    assert!(batch_resp.contains("\"batch_seq\":1"));
+    assert!(batch_resp.contains("\"merkle_root\":"));
+
+    let verify_resp = post_json(addr, "/api/payments/5000/verify", "{}").await;
+    assert!(verify_resp.contains("HTTP/1.1 200 OK"));
+    assert!(verify_resp.contains("\"verified\":true"));
+    assert!(verify_resp.contains("Cryptographic proof matches Solana PDA Merkle root"));
+
+    let duplicate_batch =
+        post_json(addr, "/api/settlement/batch", r#"{"rail":"Solana-USDC"}"#).await;
+    assert!(duplicate_batch.contains("HTTP/1.1 400 Bad Request"));
+
+    let drift_resp = post_json(addr, "/api/reconciliation/drift-simulate", "{}").await;
+    assert!(drift_resp.contains("HTTP/1.1 200 OK"));
+    assert!(drift_resp.contains("\"status\":\"DriftDetected\""));
+    assert!(drift_resp.contains("\"drift\":50000000"));
+
+    let heal_resp = post_json(addr, "/api/reconciliation/drift-heal", "{}").await;
+    assert!(heal_resp.contains("HTTP/1.1 200 OK"));
+    assert!(heal_resp.contains("\"status\":\"Clean\""));
+    assert!(heal_resp.contains("\"drift\":0"));
+
+    let sim_resp = post_json(
+        addr,
+        "/api/simulator/run",
+        r#"{"scenario":"NetworkPartition","seed":42}"#,
+    )
+    .await;
+    assert!(sim_resp.contains("HTTP/1.1 200 OK"));
+    assert!(sim_resp.contains("\"status\":\"PASSED\""));
+    assert!(sim_resp.contains("PASSED: Total wealth conservation"));
+}
+
 async fn reqwest_or_hyper(addr: std::net::SocketAddr, path: &str) -> String {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
@@ -315,5 +374,19 @@ async fn reqwest_or_hyper(addr: std::net::SocketAddr, path: &str) -> String {
         .read_to_string(&mut resp)
         .await
         .expect("read response");
+    resp
+}
+
+async fn post_json(addr: std::net::SocketAddr, path: &str, body: &str) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+    let req = format!(
+        "POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(req.as_bytes()).await.expect("write post");
+
+    let mut resp = String::new();
+    stream.read_to_string(&mut resp).await.expect("read post");
     resp
 }

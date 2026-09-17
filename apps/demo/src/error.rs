@@ -93,6 +93,10 @@ pub enum IdempotencyError {
 /// Errors originating from settlement rail adapters.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum RailError {
+    /// A settlement batch total exceeds the supported monetary range.
+    #[error("settlement batch total exceeds the supported monetary range")]
+    AmountOverflow,
+
     /// Batch submission to the settlement rail failed.
     #[error("rail submission failed: {0}")]
     SubmissionFailed(String),
@@ -109,6 +113,14 @@ pub enum RailError {
 /// Errors originating from three-way reconciliation audits.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum ReconciliationError {
+    /// A reconciliation total exceeds the supported monetary range.
+    #[error("reconciliation total exceeds the supported monetary range")]
+    AmountOverflow,
+
+    /// A reconciliation total cannot be represented as a signed drift amount.
+    #[error("reconciliation total exceeds the signed drift range")]
+    AmountExceedsSignedRange,
+
     /// A discrepancy was found between app events, ledger journal, and on-chain roots.
     #[error(
         "reconciliation drift detected: app={app_amount}, ledger={ledger_amount}, chain={chain_amount}, drift={drift}"
