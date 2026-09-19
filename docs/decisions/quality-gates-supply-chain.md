@@ -48,8 +48,6 @@ Four complementary gates, all enforced in
      work;
    - `bans licenses sources` — hard gate: permissive-only license policy and no
      unknown registries/git sources.
-   - `.github/dependabot.yml` updates `Cargo.lock` weekly and the GitHub
-     Actions monthly, so the gate always has recent supply-chain data.
    - The gate paid for itself on day one: the pre-existing default
      `heapless-cas` feature of postcard pulled the **unmaintained**
      `atomic-polyfill` (RUSTSEC-2023-0089) into the money path. Fixed by
@@ -81,5 +79,4 @@ Four complementary gates, all enforced in
   drift-detectable record and must be updated when numbers change.
 - **Not decided here**: coverage and mutation-gate thresholds, release/semver
   automation, and MSRV *policy* for future minor releases (the current pins are
-  recorded in the lockfile + `Cargo.toml` comments so dependabot's weekly
-  updates do not silently re-break the 1.80 gate).
+  recorded in the lockfile + `Cargo.toml` comments to maintain the 1.80 gate).
