@@ -44,13 +44,17 @@ Ledger operations can be prepared as a batch before they become permanent. The l
 
 ## Durable storage
 
-The `wal` crate provides the durable write ahead log used by the ingestion path. The WAL stores framed records with sequence information, payload length, and CRC32C verification. On recovery the log is scanned and each frame is checked; if a crash leaves an incomplete or invalid record at the end of the file, recovery keeps the verified prefix and removes the damaged tail. The same event application path is used when rebuilding the ledger, so recovery does not require a separate interpretation of the journal.
+The `wal` crate provides the durable write ahead log used by the ingestion path. The WAL stores framed records with sequence information, payload length, and CRC32C verification.
+
+During recovery, each frame is checked. If a crash leaves an incomplete or invalid record at the end of the file, recovery keeps the verified prefix and removes the damaged tail. The same event application path is used when rebuilding the ledger, so recovery does not require a separate interpretation of the journal.
 
 The WAL supports both individual writes and grouped writes. For grouped writes, several prepared events can be written together and the filesystem synchronised once for the group — making the durability boundary explicit while avoiding a filesystem sync for every operation. Recovery is streamed instead of loading the complete WAL into memory.
 
 ## Ingestion
 
-The ingestion layer is deliberately bounded. Requests enter through a Tokio channel with fixed capacity; when the queue is full, new work is rejected instead of allowing memory to grow without limit. The ingestion engine collects requests into short batches (512 operations or 2 ms). A batch is prepared against the ledger, converted into journal events, written to the WAL, and then committed to the in memory state. The order matters: the ledger state is not treated as durable until the corresponding journal data has crossed the configured durability boundary. The ingestion layer also exposes gRPC endpoints and records rejected work, queue behaviour, and processing metrics.
+The ingestion layer is deliberately bounded. Requests enter through a Tokio channel with fixed capacity. When the queue is full, new work is rejected instead of allowing memory to grow without limit.
+
+The ingestion engine collects requests into short batches (512 operations or 2 ms). A batch is prepared against the ledger, converted into journal events, written to the WAL, and then committed to the in memory state. The order matters: the ledger state is not treated as durable until the corresponding journal data has crossed the configured durability boundary. The ingestion layer also exposes gRPC endpoints and records rejected work, queue behaviour, and processing metrics.
 
 ## Replicated state
 
@@ -60,7 +64,7 @@ The current Raft log store is an in memory `MemLogStore`, separate from the file
 
 ## Settlement
 
-The settlement layer turns a group of settled transfers into a cryptographic commitment using a Merkle Mountain Range. Each transfer becomes a leaf hash; the MMR maintains its peaks as new transfers are added and folds those peaks into a single root. The hashing scheme separates leaves, internal nodes, and peak folding with different domain prefixes, making the different hashing operations unambiguous. The result is an incremental structure that can produce an inclusion proof for an individual transfer without requiring the complete batch to be shared with the verifier.
+The settlement layer turns a group of settled transfers into a cryptographic commitment using a Merkle Mountain Range. Each transfer becomes a leaf hash; the MMR maintains its peaks as new transfers are added and folds those peaks into a single root. The hashing scheme separates leaves, internal nodes, and peak folding with different domain prefixes, making the different hashing operations unambiguous. The result is an incremental structure that produces an inclusion proof for an individual transfer without requiring the complete batch to be shared with the verifier.
 
 ## Solana settlement
 
@@ -73,7 +77,9 @@ cargo run -p solana-settle --bin verifier -- \
   --receipt path/to/receipt.json
 ```
 
-The important boundary: the cryptographic proof proves inclusion in the committed root. It does not independently prove the original off chain data was truthful — the commitment proves the transfer belongs to the dataset that was committed. The demo currently exercises the Solana program locally through Solana account structures. It is not pretending to be a live Solana production deployment.
+The important boundary: the cryptographic proof proves inclusion in the committed root. It does not independently prove the original off chain data was truthful — the commitment proves the transfer belongs to the dataset that was committed.
+
+The demo currently exercises the Solana program locally through Solana account structures. It is not pretending to be a live Solana production deployment.
 
 ## Payment and reconciliation
 
@@ -174,8 +180,4 @@ The deeper design decisions live in the repository documentation:
 - Failure modes: FMEA, detection, mitigation, runbook refs
 - Operator runbook: deploy, monitor, rotate keys, recover
 
-These documents are part of the project because the code is easier to understand when the reasons behind the boundaries are visible.
-
-## What this project is
-
-TrustLedger is a working engineering project built around financial state. It brings accounting, persistence, asynchronous ingestion, replication, settlement, reconciliation, security, observability, and failure testing into one system. The individual pieces are useful on their own. The interesting part is how they behave together when the system is under load, when a request is retried, when a process crashes, when a node disappears, or when two views of the same money disagree. 
+These documents are part of the project because the code is easier to understand when the reasons behind the boundaries are visible. 
