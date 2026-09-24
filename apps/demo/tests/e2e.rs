@@ -357,7 +357,7 @@ async fn test_interactive_dashboard_api_endpoints() {
     .await;
     assert!(sim_resp.contains("HTTP/1.1 200 OK"));
     assert!(sim_resp.contains("\"status\":\"PASSED\""));
-    assert!(sim_resp.contains("PASSED: Total wealth conservation"));
+    assert!(sim_resp.contains("PASSED: Wealth conservation"));
 }
 
 async fn reqwest_or_hyper(addr: std::net::SocketAddr, path: &str) -> String {

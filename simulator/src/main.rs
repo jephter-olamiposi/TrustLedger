@@ -84,7 +84,8 @@ fn main() -> ExitCode {
 
     println!("================================================================================");
     println!(" TrustLedger Deterministic Simulation Testing (DST) Harness");
-    println!(" Method: FoundationDB / TigerBeetle discrete-event seeded pseudo-random injection");
+    println!(" Method: Deterministic discrete-event seeded pseudo-random injection");
+    println!("         reproducing partitions, crashes, packet loss, duplicates, and recovery");
     println!("================================================================================");
 
     if let Some(count) = fuzz_count {
@@ -161,14 +162,14 @@ fn main() -> ExitCode {
 
     println!("\n================================================================================");
     println!("✅ All {} simulation scenarios PASSED!", reports.len());
-    println!("   Invariants verified: 100% Wealth Conservation (Zero Drift), Log Agreement.");
+    println!("   Invariants verified: Wealth Conservation (Zero Drift), Log Agreement.");
     println!("================================================================================");
 
     ExitCode::SUCCESS
 }
 
 fn print_report(rep: &ScenarioReport) {
-    println!("    * Status:             PASSED (Invariants 100% Conserved)");
+    println!("    * Status:             PASSED (Invariants Conserved)");
     println!("    * Simulated Ticks:    {}", rep.total_ticks);
     println!("    * Ops Proposed:       {}", rep.ops_proposed);
     println!("    * Ops Committed:      {}", rep.ops_committed);

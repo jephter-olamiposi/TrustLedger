@@ -13,7 +13,7 @@ Financial ledgers and distributed consensus engines operate under hostile condit
 2. **Irreproducibility:** Rare edge-case bugs (e.g. partition transitions during leader election with concurrent in-flight writes) cannot be reliably reproduced once detected in CI.
 3. **Slow Execution:** Simulating time-dependent failure recovery (e.g. heartbeat timeouts, partition healing) requires real wall-clock seconds, severely restricting the number of state machine interleavings that can be explored.
 
-To achieve Tier-1 systems verification comparable to TigerBeetle and FoundationDB, TrustLedger requires a fully deterministic, seeded simulation harness (DST) capable of exploring millions of state transitions under chaos fault injection in milliseconds.
+TrustLedger requires a fully deterministic, seeded simulation harness (DST) capable of exploring millions of state transitions under chaos fault injection in milliseconds.
 
 ---
 

@@ -266,12 +266,12 @@ const DASHBOARD_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
                     </button>
                 </section>
 
-                <!-- 3. Fault Injection Simulator (TigerBeetle DST) -->
+                <!-- 3. Fault Injection Simulator -->
                 <section class="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-4">
                     <div class="flex items-center justify-between pb-3 border-b border-slate-100">
                         <div>
                             <h3 class="text-sm font-bold text-slate-900">Fault Injection Simulator</h3>
-                            <p class="text-[11px] text-slate-500">Deterministic Simulation Testing (TigerBeetle DST)</p>
+                            <p class="text-[11px] text-slate-500">Deterministic Simulation Testing (DST)</p>
                         </div>
                         <span class="px-2 py-0.5 text-[10px] font-mono font-semibold rounded bg-rose-50 text-rose-700 border border-rose-200">DST</span>
                     </div>

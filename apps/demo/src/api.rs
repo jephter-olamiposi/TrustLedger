@@ -1267,7 +1267,7 @@ async fn handle_simulator_run(
         ops_committed: report.ops_committed,
         packets_delivered: report.packets_delivered,
         packets_dropped: report.packets_dropped,
-        oracle_verdict: "PASSED: Total wealth conservation, zero balance leakage, and state machine agreement verified across all simulated states.".to_string(),
+        oracle_verdict: "PASSED: Wealth conservation (zero drift), non-negative balances, and log agreement verified across simulated states.".to_string(),
         status: "PASSED".to_string(),
     }))
 }
