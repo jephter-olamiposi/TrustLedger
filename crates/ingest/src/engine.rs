@@ -262,6 +262,8 @@ impl Engine {
                     payloads.push(payload);
                 }
 
+                // Isolate blocking disk fdatasync off the async worker pool in multi-threaded runtimes
+                // without panicking on single-threaded runtimes (e.g. current_thread test suites).
                 let append_res = match tokio::runtime::Handle::try_current() {
                     Ok(handle)
                         if handle.runtime_flavor()

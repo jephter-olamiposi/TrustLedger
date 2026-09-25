@@ -12,11 +12,13 @@ use crate::error::IngestError;
 use crate::proto;
 use crate::queue::{IngestCommand, IngestOp, IngestQueue, MutationResult};
 
+// Splits a 128-bit ID into low and high 64-bit words for backward-compatible protobuf transport without precision loss.
 #[inline]
 fn split_u128(val: u128) -> (u64, u64) {
     ((val & 0xFFFF_FFFF_FFFF_FFFF) as u64, (val >> 64) as u64)
 }
 
+// Reconstructs a full 128-bit ID from protobuf low and high 64-bit words.
 #[inline]
 fn join_u128(low: u64, high: u64) -> u128 {
     ((high as u128) << 64) | (low as u128)
