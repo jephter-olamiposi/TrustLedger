@@ -262,7 +262,16 @@ impl Engine {
                     payloads.push(payload);
                 }
 
-                if let Err(wal_err) = self.wal.append_batch(&payloads) {
+                let append_res = match tokio::runtime::Handle::try_current() {
+                    Ok(handle)
+                        if handle.runtime_flavor()
+                            == tokio::runtime::RuntimeFlavor::MultiThread =>
+                    {
+                        tokio::task::block_in_place(|| self.wal.append_batch(&payloads))
+                    }
+                    _ => self.wal.append_batch(&payloads),
+                };
+                if let Err(wal_err) = append_res {
                     let ingest_err = IngestError::from(wal_err);
                     for resp in successful_responders {
                         resp.respond_err(ingest_err.clone());

@@ -16,7 +16,7 @@ pub mod storage;
 pub mod workload;
 
 pub use clock::{SimClock, SimInstant};
-pub use cluster::{ClusterMessage, NodeStatus, SimCluster, SimNode};
+pub use cluster::{ClusterMessage, NodeRole, NodeStatus, SimCluster, SimNode, SimWalEntry};
 pub use network::{NetworkConfig, SimNetwork, SimPacket};
 pub use oracle::{Oracle, OracleViolation};
 pub use rng::SimRng;

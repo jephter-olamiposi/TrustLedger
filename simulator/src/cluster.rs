@@ -56,6 +56,8 @@ pub enum ClusterMessage {
         term: u64,
         /// Candidate node soliciting vote.
         candidate_id: u64,
+        /// Monotonic log index of candidate's last committed entry.
+        last_index: u64,
     },
     /// Grant vote to a candidate in the specified term.
     VoteGranted {
@@ -63,6 +65,15 @@ pub enum ClusterMessage {
         from: u64,
         /// Election term.
         term: u64,
+    },
+    /// Heartbeat sent periodically by leader to suppress follower elections.
+    Heartbeat {
+        /// Leader's current term.
+        term: u64,
+        /// Leader node ID.
+        leader_id: u64,
+        /// Current commit index of leader.
+        commit_index: u64,
     },
     /// Request log catch-up entries from leader.
     CatchupRequest {
@@ -89,6 +100,28 @@ pub enum NodeStatus {
     Crashed,
 }
 
+/// Consensus role of an individual cluster node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeRole {
+    /// Follower waiting for periodic heartbeats or proposals from leader.
+    Follower,
+    /// Candidate soliciting votes across the cluster.
+    Candidate,
+    /// Authoritative cluster leader coordinating log replication.
+    Leader,
+}
+
+/// Simulated WAL entry written to durable disk for each committed cluster operation.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SimWalEntry {
+    /// Consensus log index.
+    pub index: u64,
+    /// Canonical timestamp assigned to this entry.
+    pub timestamp: u64,
+    /// Financial workload operation.
+    pub op: WorkloadOp,
+}
+
 /// A simulated TrustLedger cluster node combining state machine, storage, and consensus state.
 #[derive(Debug, Clone)]
 pub struct SimNode {
@@ -96,14 +129,30 @@ pub struct SimNode {
     pub id: u64,
     /// Accounting state machine.
     pub ledger: Ledger,
+    /// Currency decimal scale.
+    pub scale: Scale,
+    /// Configured accounts tracked across the cluster.
+    pub accounts: Vec<AccountId>,
+    /// Initial balance per customer account.
+    pub initial_balance: u128,
     /// Fault-injected durable storage.
     pub disk: SimDisk,
     /// Node health status.
     pub status: NodeStatus,
+    /// Current consensus role (Follower, Candidate, Leader).
+    pub role: NodeRole,
     /// Current consensus term.
     pub term: u64,
     /// True if currently recognized as cluster leader.
     pub is_leader: bool,
+    /// Candidate voted for in current term.
+    pub voted_for: Option<u64>,
+    /// Set of voter IDs that granted votes in current election term.
+    pub votes_received: BTreeSet<u64>,
+    /// Virtual tick of last received heartbeat or leader communication.
+    pub last_heartbeat_tick: u64,
+    /// Randomized election timeout in virtual ticks.
+    pub election_timeout: u64,
     /// Log of committed operations with their canonical timestamps: `(index -> (op, timestamp))`.
     pub committed_ops: BTreeMap<u64, (WorkloadOp, u64)>,
     /// Out-of-order commits awaiting preceding log entries: `(index -> (op, timestamp))`.
@@ -118,58 +167,77 @@ impl SimNode {
     /// Creates a new node with initialized accounts and funded customer balances.
     #[must_use]
     pub fn new(id: u64, scale: Scale, accounts: &[AccountId], initial_balance: u128) -> Self {
-        let mut ledger = Ledger::new(scale);
+        let accounts_vec = accounts.to_vec();
+        let mut node = Self {
+            id,
+            ledger: Ledger::new(scale),
+            scale,
+            accounts: accounts_vec,
+            initial_balance,
+            disk: SimDisk::new(),
+            status: NodeStatus::Active,
+            role: if id == 1 {
+                NodeRole::Leader
+            } else {
+                NodeRole::Follower
+            },
+            term: 1,
+            is_leader: id == 1,
+            voted_for: if id == 1 { Some(1) } else { None },
+            votes_received: BTreeSet::new(),
+            last_heartbeat_tick: 0,
+            election_timeout: 15 + (id * 5),
+            committed_ops: BTreeMap::new(),
+            pending_commits: BTreeMap::new(),
+            uncommitted: BTreeMap::new(),
+            commit_index: 0,
+        };
 
+        node.reinit_base_state();
+        node
+    }
+
+    /// Re-initializes base genesis state machine with accounts and seed balance.
+    pub fn reinit_base_state(&mut self) {
+        let mut ledger = Ledger::new(self.scale);
         let vault_acc = AccountId::new(99_999);
         let _ = ledger.create_account(
             vault_acc,
             AccountType::Asset,
             AccountFlags::bank_asset(),
-            scale,
+            self.scale,
             1_000,
         );
 
         let mut timestamp = 1_000;
-        for (idx, &acc_id) in accounts.iter().enumerate() {
+        for (idx, &acc_id) in self.accounts.iter().enumerate() {
             timestamp += 1;
             let _ = ledger.create_account(
                 acc_id,
                 AccountType::Liability,
                 AccountFlags::customer(),
-                scale,
+                self.scale,
                 timestamp,
             );
 
-            if initial_balance > 0 {
+            if self.initial_balance > 0 {
                 timestamp += 1;
                 if let Ok(seed_tx) = Transfer::new_immediate(
                     TransferId::new(50_000 + idx as u128),
                     vault_acc,
                     acc_id,
-                    Amount::new(initial_balance),
+                    Amount::new(self.initial_balance),
                     timestamp,
                 ) {
                     let _ = ledger.create_transfer(seed_tx);
                 }
             }
         }
-
-        Self {
-            id,
-            ledger,
-            disk: SimDisk::new(),
-            status: NodeStatus::Active,
-            term: 1,
-            is_leader: id == 1, // Node 1 is initial bootstrap leader
-            committed_ops: BTreeMap::new(),
-            pending_commits: BTreeMap::new(),
-            uncommitted: BTreeMap::new(),
-            commit_index: 0,
-        }
+        self.ledger = ledger;
     }
 
-    /// Applies an operation directly to the local state machine and flushes to durable disk.
-    pub fn apply_op(&mut self, op: &WorkloadOp, timestamp: u64) {
+    /// Applies an operation directly to in-memory state machine without writing to disk.
+    fn apply_op_in_memory(&mut self, index: u64, op: &WorkloadOp, timestamp: u64) {
         match op {
             WorkloadOp::DirectTransfer {
                 transfer_id,
@@ -224,11 +292,75 @@ impl SimNode {
                     .void_pending(TransferId::new(*pending_id), timestamp);
             }
         }
+        self.committed_ops.insert(index, (op.clone(), timestamp));
+        self.commit_index = self.commit_index.max(index);
+    }
 
-        let mut log_bytes = Vec::new();
-        log_bytes.extend_from_slice(&timestamp.to_be_bytes());
-        self.disk.write(&log_bytes);
-        self.disk.sync();
+    /// Applies an operation to the state machine and flushes a CRC32C-verified WAL frame to disk.
+    pub fn apply_op(&mut self, index: u64, op: &WorkloadOp, timestamp: u64) {
+        self.apply_op_in_memory(index, op, timestamp);
+
+        let entry = SimWalEntry {
+            index,
+            timestamp,
+            op: op.clone(),
+        };
+        if let Ok(payload) = postcard::to_allocvec(&entry) {
+            if let Ok(frame) =
+                wal::record::encode(index, &payload, wal::record::DEFAULT_MAX_PAYLOAD_LEN)
+            {
+                self.disk.write(&frame);
+                self.disk.sync();
+            }
+        }
+    }
+
+    /// Recovers state machine from durable WAL disk blocks, verifying CRC32C checksums
+    /// and cleanly discarding any torn write tail.
+    pub fn recover(&mut self) {
+        use std::io::BufReader;
+
+        self.reinit_base_state();
+        self.committed_ops.clear();
+        self.pending_commits.clear();
+        self.uncommitted.clear();
+        self.commit_index = 0;
+
+        let durable_bytes = self.disk.read_durable().to_vec();
+        let mut reader = BufReader::new(durable_bytes.as_slice());
+        let mut valid_bytes = 0usize;
+
+        loop {
+            match wal::record::next_record(&mut reader, wal::record::DEFAULT_MAX_PAYLOAD_LEN, true)
+            {
+                Ok(wal::record::ScanStep::Record {
+                    len,
+                    payload: Some(payload),
+                    ..
+                }) => {
+                    let frame_size = wal::record::frame_len(len);
+                    if let Ok(entry) = postcard::from_bytes::<SimWalEntry>(&payload) {
+                        self.apply_op_in_memory(entry.index, &entry.op, entry.timestamp);
+                        valid_bytes += frame_size;
+                    } else {
+                        break;
+                    }
+                }
+                Ok(wal::record::ScanStep::Record { .. }) => {}
+                Ok(wal::record::ScanStep::End) => {
+                    break;
+                }
+                Ok(wal::record::ScanStep::Broken) => {
+                    // Torn write or corrupted frame detected via CRC32C. Truncate log here.
+                    break;
+                }
+                Err(_) => {
+                    break;
+                }
+            }
+        }
+
+        self.disk.truncate_durable(valid_bytes);
     }
 }
 
@@ -321,12 +453,75 @@ impl SimCluster {
             .map(|n| n.id)
     }
 
-    /// Advances the cluster by processing deliverable packets at tick `now`.
+    /// Advances the cluster by processing deliverable packets at tick `now` and updating node timers.
     pub fn step(&mut self, now: SimInstant, rng: &mut SimRng) {
         let packets = self.network.drain_ready(now);
 
         for packet in packets {
             self.process_packet(packet.from, packet.to, packet.payload, now, rng);
+        }
+
+        self.tick_nodes(now, rng);
+    }
+
+    fn tick_nodes(&mut self, now: SimInstant, rng: &mut SimRng) {
+        let active_node_ids: Vec<u64> = self
+            .nodes
+            .values()
+            .filter(|n| n.status == NodeStatus::Active)
+            .map(|n| n.id)
+            .collect();
+
+        for node_id in active_node_ids {
+            let mut action = None;
+            if let Some(node) = self.nodes.get_mut(&node_id) {
+                if node.role == NodeRole::Leader {
+                    // Invariant: leader broadcasts heartbeats every 5 ticks to suppress elections
+                    if now.ticks().saturating_sub(node.last_heartbeat_tick) >= 5 {
+                        node.last_heartbeat_tick = now.ticks();
+                        action = Some((node.term, node.commit_index, true));
+                    }
+                } else if now.ticks().saturating_sub(node.last_heartbeat_tick)
+                    >= node.election_timeout
+                {
+                    // Election timeout expired: transition to candidate and solicit quorum votes
+                    node.term = node.term.saturating_add(1);
+                    node.role = NodeRole::Candidate;
+                    node.is_leader = false;
+                    node.voted_for = Some(node_id);
+                    node.votes_received.clear();
+                    node.votes_received.insert(node_id);
+                    node.last_heartbeat_tick = now.ticks();
+                    node.election_timeout = rng.gen_range(15..=30);
+                    action = Some((node.term, node.commit_index, false));
+                }
+            }
+
+            if let Some((term, commit_index, is_heartbeat)) = action {
+                let peer_ids: Vec<u64> = self
+                    .nodes
+                    .keys()
+                    .copied()
+                    .filter(|&id| id != node_id)
+                    .collect();
+
+                for peer_id in peer_ids {
+                    let msg = if is_heartbeat {
+                        ClusterMessage::Heartbeat {
+                            term,
+                            leader_id: node_id,
+                            commit_index,
+                        }
+                    } else {
+                        ClusterMessage::RequestVote {
+                            term,
+                            candidate_id: node_id,
+                            last_index: commit_index,
+                        }
+                    };
+                    self.network.send(node_id, peer_id, msg, now, rng);
+                }
+            }
         }
     }
 
@@ -347,8 +542,14 @@ impl SimCluster {
             ClusterMessage::Propose { term, index, op } => {
                 let mut reply = None;
                 if let Some(node) = self.nodes.get_mut(&to) {
-                    if term >= node.term {
+                    if term > node.term {
                         node.term = term;
+                        node.role = NodeRole::Follower;
+                        node.is_leader = false;
+                        node.voted_for = None;
+                    }
+                    if term >= node.term {
+                        node.last_heartbeat_tick = now.ticks();
                         node.uncommitted.insert(index, (op, BTreeSet::new()));
                         reply = Some(ClusterMessage::Ack {
                             from: to,
@@ -367,7 +568,7 @@ impl SimCluster {
                 index,
             } => {
                 let mut commit_op = None;
-                let quorum_size = (self.nodes.len() / 2) + 1; // 2 out of 3
+                let quorum_size = (self.nodes.len() / 2) + 1;
 
                 if let Some(leader) = self.nodes.get_mut(&to) {
                     if leader.is_leader && leader.term == term {
@@ -392,11 +593,7 @@ impl SimCluster {
                             leader.pending_commits.remove(&(leader.commit_index + 1))
                         {
                             let next_idx = leader.commit_index + 1;
-                            leader.apply_op(&next_op, next_ts);
-                            leader
-                                .committed_ops
-                                .insert(next_idx, (next_op.clone(), next_ts));
-                            leader.commit_index = next_idx;
+                            leader.apply_op(next_idx, &next_op, next_ts);
                             leader.uncommitted.remove(&next_idx);
                             newly_committed.push((next_idx, next_op, next_ts));
                         }
@@ -424,29 +621,84 @@ impl SimCluster {
                 timestamp,
             } => {
                 if let Some(node) = self.nodes.get_mut(&to) {
-                    if term >= node.term {
+                    if term > node.term {
                         node.term = term;
+                        node.role = NodeRole::Follower;
+                        node.is_leader = false;
+                        node.voted_for = None;
+                    }
+                    if term >= node.term {
+                        node.last_heartbeat_tick = now.ticks();
                         if !node.committed_ops.contains_key(&index) {
                             node.pending_commits.insert(index, (op, timestamp));
                             while let Some((next_op, next_ts)) =
                                 node.pending_commits.remove(&(node.commit_index + 1))
                             {
                                 let next_idx = node.commit_index + 1;
-                                node.apply_op(&next_op, next_ts);
-                                node.committed_ops.insert(next_idx, (next_op, next_ts));
-                                node.commit_index = next_idx;
+                                node.apply_op(next_idx, &next_op, next_ts);
                                 node.uncommitted.remove(&next_idx);
                             }
                         }
                     }
                 }
             }
-            ClusterMessage::RequestVote { term, candidate_id } => {
+            ClusterMessage::Heartbeat {
+                term,
+                leader_id,
+                commit_index,
+            } => {
+                let mut needs_catchup = false;
+                let mut my_commit_index = 0;
+
+                if let Some(node) = self.nodes.get_mut(&to) {
+                    if term > node.term {
+                        node.term = term;
+                        node.role = NodeRole::Follower;
+                        node.is_leader = false;
+                        node.voted_for = None;
+                    }
+                    if term >= node.term {
+                        node.last_heartbeat_tick = now.ticks();
+                        node.role = NodeRole::Follower;
+                        node.is_leader = false;
+                        if commit_index > node.commit_index {
+                            needs_catchup = true;
+                            my_commit_index = node.commit_index;
+                        }
+                    }
+                }
+
+                if needs_catchup {
+                    self.network.send(
+                        to,
+                        leader_id,
+                        ClusterMessage::CatchupRequest {
+                            from: to,
+                            last_index: my_commit_index,
+                        },
+                        now,
+                        rng,
+                    );
+                }
+            }
+            ClusterMessage::RequestVote {
+                term,
+                candidate_id,
+                last_index,
+            } => {
                 let mut grant = false;
                 if let Some(node) = self.nodes.get_mut(&to) {
                     if term > node.term {
                         node.term = term;
+                        node.role = NodeRole::Follower;
                         node.is_leader = false;
+                        node.voted_for = None;
+                    }
+                    let log_ok = last_index >= node.commit_index;
+                    let vote_ok = node.voted_for.is_none() || node.voted_for == Some(candidate_id);
+                    if term == node.term && vote_ok && log_ok {
+                        node.voted_for = Some(candidate_id);
+                        node.last_heartbeat_tick = now.ticks();
                         grant = true;
                     }
                 }
@@ -460,10 +712,38 @@ impl SimCluster {
                     );
                 }
             }
-            ClusterMessage::VoteGranted { from: _, term } => {
+            ClusterMessage::VoteGranted { from, term } => {
+                let mut became_leader = false;
+                let quorum_size = (self.nodes.len() / 2) + 1;
+
                 if let Some(node) = self.nodes.get_mut(&to) {
-                    if node.term == term && !node.is_leader {
-                        node.is_leader = true;
+                    if node.term == term && node.role == NodeRole::Candidate {
+                        node.votes_received.insert(from);
+                        if node.votes_received.len() >= quorum_size {
+                            node.role = NodeRole::Leader;
+                            node.is_leader = true;
+                            node.last_heartbeat_tick = now.ticks();
+                            became_leader = true;
+                        }
+                    }
+                }
+
+                if became_leader {
+                    let commit_idx = self.nodes.get(&to).map_or(0, |n| n.commit_index);
+                    let peer_ids: Vec<u64> =
+                        self.nodes.keys().copied().filter(|&id| id != to).collect();
+                    for peer in peer_ids {
+                        self.network.send(
+                            to,
+                            peer,
+                            ClusterMessage::Heartbeat {
+                                term,
+                                leader_id: to,
+                                commit_index: commit_idx,
+                            },
+                            now,
+                            rng,
+                        );
                     }
                 }
             }
@@ -500,9 +780,7 @@ impl SimCluster {
                         node.pending_commits.remove(&(node.commit_index + 1))
                     {
                         let next_idx = node.commit_index + 1;
-                        node.apply_op(&next_op, next_ts);
-                        node.committed_ops.insert(next_idx, (next_op, next_ts));
-                        node.commit_index = next_idx;
+                        node.apply_op(next_idx, &next_op, next_ts);
                         node.uncommitted.remove(&next_idx);
                     }
                 }
@@ -515,8 +793,15 @@ impl SimCluster {
         if let Some(candidate) = self.nodes.get_mut(&candidate_id) {
             if candidate.status == NodeStatus::Active {
                 candidate.term = candidate.term.saturating_add(1);
-                candidate.is_leader = true; // Votes for self
+                candidate.role = NodeRole::Candidate;
+                candidate.is_leader = false;
+                candidate.voted_for = Some(candidate_id);
+                candidate.votes_received.clear();
+                candidate.votes_received.insert(candidate_id);
+                candidate.last_heartbeat_tick = now.ticks();
+                candidate.election_timeout = rng.gen_range(15..=30);
                 let term = candidate.term;
+                let last_index = candidate.commit_index;
 
                 let peer_ids: Vec<u64> = self
                     .nodes
@@ -529,7 +814,11 @@ impl SimCluster {
                     self.network.send(
                         candidate_id,
                         peer_id,
-                        ClusterMessage::RequestVote { term, candidate_id },
+                        ClusterMessage::RequestVote {
+                            term,
+                            candidate_id,
+                            last_index,
+                        },
                         now,
                         rng,
                     );
@@ -542,19 +831,29 @@ impl SimCluster {
     pub fn crash_node(&mut self, node_id: u64, torn_write: bool, rng: &mut SimRng) {
         if let Some(node) = self.nodes.get_mut(&node_id) {
             node.status = NodeStatus::Crashed;
+            node.role = NodeRole::Follower;
             node.is_leader = false;
+            node.voted_for = None;
+            node.votes_received.clear();
             node.uncommitted.clear();
+            node.pending_commits.clear();
             node.disk.crash(rng, torn_write);
         }
         self.network.isolate(node_id);
     }
 
-    /// Reboots a crashed node, reconnecting it to the network and triggering catch-up sync.
+    /// Reboots a crashed node, recovering from disk and requesting catch-up synchronization.
     pub fn reboot_node(&mut self, node_id: u64, now: SimInstant, rng: &mut SimRng) {
         let mut last_index = 0;
         if let Some(node) = self.nodes.get_mut(&node_id) {
+            node.recover();
             node.status = NodeStatus::Active;
+            node.role = NodeRole::Follower;
             node.is_leader = false;
+            node.voted_for = None;
+            node.votes_received.clear();
+            node.last_heartbeat_tick = now.ticks();
+            node.election_timeout = rng.gen_range(15..=30);
             last_index = node.commit_index;
         }
         self.network.unisolate(node_id);

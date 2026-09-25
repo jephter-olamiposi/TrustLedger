@@ -67,17 +67,31 @@ impl SimDisk {
     pub fn crash(&mut self, rng: &mut SimRng, torn_write: bool) {
         self.crashes_count = self.crashes_count.saturating_add(1);
 
-        if torn_write && !self.buffered.is_empty() {
-            // Persist a random non-empty prefix of the uncommitted buffer, truncating the frame.
-            let max_range = (self.buffered.len() as u64).max(2);
-            let torn_len = (rng.gen_range(1..max_range) as usize).min(self.buffered.len());
-            if let Some(prefix) = self.buffered.get(..torn_len) {
-                self.flushed.extend_from_slice(prefix);
+        if torn_write {
+            if !self.buffered.is_empty() {
+                // Persist a random non-empty prefix of the uncommitted buffer, truncating the frame.
+                let max_range = (self.buffered.len() as u64).max(2);
+                let torn_len = (rng.gen_range(1..max_range) as usize).min(self.buffered.len());
+                if let Some(prefix) = self.buffered.get(..torn_len) {
+                    self.flushed.extend_from_slice(prefix);
+                }
+            } else if !self.flushed.is_empty() {
+                // Simulate an in-flight sector torn write appending invalid trailing bytes
+                let torn_len = rng.gen_range(1..=15) as usize;
+                let fragment: Vec<u8> = (0..torn_len)
+                    .map(|i| (i as u8).wrapping_add(0xEE))
+                    .collect();
+                self.flushed.extend_from_slice(&fragment);
             }
         }
 
         // Invariant: all volatile memory in OS cache is vaporized on sudden power cut.
         self.buffered.clear();
+    }
+
+    /// Truncates durably persisted storage to `len` bytes, discarding any torn write tail.
+    pub fn truncate_durable(&mut self, len: usize) {
+        self.flushed.truncate(len);
     }
 
     /// Reads all durably flushed bytes from the simulated disk.

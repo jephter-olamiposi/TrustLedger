@@ -12,12 +12,22 @@ use crate::error::IngestError;
 use crate::proto;
 use crate::queue::{IngestCommand, IngestOp, IngestQueue, MutationResult};
 
+#[inline]
+fn split_u128(val: u128) -> (u64, u64) {
+    ((val & 0xFFFF_FFFF_FFFF_FFFF) as u64, (val >> 64) as u64)
+}
+
+#[inline]
+fn join_u128(low: u64, high: u64) -> u128 {
+    ((high as u128) << 64) | (low as u128)
+}
+
 fn amount_to_proto(amount: Amount, scale: u32) -> proto::Amount {
-    let val = amount.as_u128();
+    let (units, units_high) = split_u128(amount.as_u128());
     proto::Amount {
-        units: (val & 0xFFFF_FFFF_FFFF_FFFF) as u64,
+        units,
         scale,
-        units_high: (val >> 64) as u64,
+        units_high,
     }
 }
 
@@ -74,12 +84,14 @@ fn balance_to_proto(balance: ledger_core::account::Balance, scale: u32) -> proto
 
 fn account_to_proto(account: Account) -> proto::Account {
     let scale_u32 = account.scale.as_u8() as u32;
+    let (id, id_high) = split_u128(account.id.as_u128());
     proto::Account {
-        id: account.id.as_u128() as u64,
+        id,
         account_type: account_type_to_proto(account.account_type),
         flags: Some(flags_to_proto(account.flags)),
         scale: scale_u32,
         balance: Some(balance_to_proto(account.balance, scale_u32)),
+        id_high,
     }
 }
 
@@ -92,14 +104,25 @@ fn transfer_state_to_proto(state: TransferState) -> i32 {
 }
 
 fn transfer_to_proto(transfer: Transfer, scale: u32) -> proto::Transfer {
+    let (id, id_high) = split_u128(transfer.id().as_u128());
+    let (debit_account_id, debit_account_id_high) =
+        split_u128(transfer.debit_account_id().as_u128());
+    let (credit_account_id, credit_account_id_high) =
+        split_u128(transfer.credit_account_id().as_u128());
+    let pending_split = transfer.pending_id().map(|pid| split_u128(pid.as_u128()));
+
     proto::Transfer {
-        id: transfer.id().as_u128() as u64,
-        debit_account_id: transfer.debit_account_id().as_u128() as u64,
-        credit_account_id: transfer.credit_account_id().as_u128() as u64,
+        id,
+        debit_account_id,
+        credit_account_id,
         amount: Some(amount_to_proto(transfer.amount(), scale)),
         state: transfer_state_to_proto(transfer.state()),
-        pending_id: transfer.pending_id().map(|id| id.as_u128() as u64),
+        pending_id: pending_split.map(|(low, _)| low),
         timestamp: transfer.timestamp(),
+        id_high,
+        debit_account_id_high,
+        credit_account_id_high,
+        pending_id_high: pending_split.map(|(_, high)| high),
     }
 }
 
@@ -130,7 +153,7 @@ impl LedgerServer {
                 }));
             }
         }
-        let units = ((p.units_high as u128) << 64) | (p.units as u128);
+        let units = join_u128(p.units, p.units_high);
         Ok(Amount::new(units))
     }
 }
@@ -142,7 +165,7 @@ impl proto::ledger_service_server::LedgerService for LedgerServer {
         request: Request<proto::CreateAccountRequest>,
     ) -> Result<Response<proto::CreateAccountResponse>, Status> {
         let req = request.into_inner();
-        let id = AccountId::new(req.id as u128);
+        let id = AccountId::new(join_u128(req.id, req.id_high));
         let account_type = proto_to_account_type(req.account_type)?;
         let flags = proto_to_flags(req.flags);
         let scale_u8 = u8::try_from(req.scale)
@@ -178,9 +201,11 @@ impl proto::ledger_service_server::LedgerService for LedgerServer {
         request: Request<proto::CreateTransferRequest>,
     ) -> Result<Response<proto::CreateTransferResponse>, Status> {
         let req = request.into_inner();
-        let id = TransferId::new(req.id as u128);
-        let debit_account_id = AccountId::new(req.debit_account_id as u128);
-        let credit_account_id = AccountId::new(req.credit_account_id as u128);
+        let id = TransferId::new(join_u128(req.id, req.id_high));
+        let debit_account_id =
+            AccountId::new(join_u128(req.debit_account_id, req.debit_account_id_high));
+        let credit_account_id =
+            AccountId::new(join_u128(req.credit_account_id, req.credit_account_id_high));
         let amount = self.parse_amount(req.amount)?;
 
         let (tx, rx) = oneshot::channel();
@@ -213,9 +238,11 @@ impl proto::ledger_service_server::LedgerService for LedgerServer {
         request: Request<proto::CreatePendingRequest>,
     ) -> Result<Response<proto::CreatePendingResponse>, Status> {
         let req = request.into_inner();
-        let id = TransferId::new(req.id as u128);
-        let debit_account_id = AccountId::new(req.debit_account_id as u128);
-        let credit_account_id = AccountId::new(req.credit_account_id as u128);
+        let id = TransferId::new(join_u128(req.id, req.id_high));
+        let debit_account_id =
+            AccountId::new(join_u128(req.debit_account_id, req.debit_account_id_high));
+        let credit_account_id =
+            AccountId::new(join_u128(req.credit_account_id, req.credit_account_id_high));
         let amount = self.parse_amount(req.amount)?;
 
         let (tx, rx) = oneshot::channel();
@@ -248,8 +275,9 @@ impl proto::ledger_service_server::LedgerService for LedgerServer {
         request: Request<proto::PostPendingRequest>,
     ) -> Result<Response<proto::PostPendingResponse>, Status> {
         let req = request.into_inner();
-        let pending_id = TransferId::new(req.pending_id as u128);
-        let post_transfer_id = TransferId::new(req.post_transfer_id as u128);
+        let pending_id = TransferId::new(join_u128(req.pending_id, req.pending_id_high));
+        let post_transfer_id =
+            TransferId::new(join_u128(req.post_transfer_id, req.post_transfer_id_high));
         let amount = self.parse_amount(req.amount)?;
 
         let (tx, rx) = oneshot::channel();
@@ -281,7 +309,7 @@ impl proto::ledger_service_server::LedgerService for LedgerServer {
         request: Request<proto::VoidPendingRequest>,
     ) -> Result<Response<proto::VoidPendingResponse>, Status> {
         let req = request.into_inner();
-        let pending_id = TransferId::new(req.pending_id as u128);
+        let pending_id = TransferId::new(join_u128(req.pending_id, req.pending_id_high));
 
         let (tx, rx) = oneshot::channel();
         self.queue.submit(IngestCommand::Mutate {
@@ -310,7 +338,7 @@ impl proto::ledger_service_server::LedgerService for LedgerServer {
         request: Request<proto::GetAccountRequest>,
     ) -> Result<Response<proto::GetAccountResponse>, Status> {
         let req = request.into_inner();
-        let id = AccountId::new(req.id as u128);
+        let id = AccountId::new(join_u128(req.id, req.id_high));
 
         let (tx, rx) = oneshot::channel();
         self.queue
@@ -327,7 +355,7 @@ impl proto::ledger_service_server::LedgerService for LedgerServer {
         request: Request<proto::GetTransferRequest>,
     ) -> Result<Response<proto::GetTransferResponse>, Status> {
         let req = request.into_inner();
-        let id = TransferId::new(req.id as u128);
+        let id = TransferId::new(join_u128(req.id, req.id_high));
 
         let (tx, rx) = oneshot::channel();
         self.queue
@@ -353,7 +381,7 @@ impl proto::ledger_service_server::LedgerService for LedgerServer {
             };
             match operation {
                 proto::batch_operation::Operation::CreateAccount(c) => {
-                    let id = AccountId::new(c.id as u128);
+                    let id = AccountId::new(join_u128(c.id, c.id_high));
                     let account_type = proto_to_account_type(c.account_type)?;
                     let flags = proto_to_flags(c.flags);
                     let scale_u8 = u8::try_from(c.scale)
@@ -368,9 +396,11 @@ impl proto::ledger_service_server::LedgerService for LedgerServer {
                     });
                 }
                 proto::batch_operation::Operation::CreateTransfer(t) => {
-                    let id = TransferId::new(t.id as u128);
-                    let debit_account_id = AccountId::new(t.debit_account_id as u128);
-                    let credit_account_id = AccountId::new(t.credit_account_id as u128);
+                    let id = TransferId::new(join_u128(t.id, t.id_high));
+                    let debit_account_id =
+                        AccountId::new(join_u128(t.debit_account_id, t.debit_account_id_high));
+                    let credit_account_id =
+                        AccountId::new(join_u128(t.credit_account_id, t.credit_account_id_high));
                     let amount = self.parse_amount(t.amount)?;
                     ops.push(IngestOp::CreateTransfer {
                         id,
@@ -381,9 +411,11 @@ impl proto::ledger_service_server::LedgerService for LedgerServer {
                     });
                 }
                 proto::batch_operation::Operation::CreatePending(p) => {
-                    let id = TransferId::new(p.id as u128);
-                    let debit_account_id = AccountId::new(p.debit_account_id as u128);
-                    let credit_account_id = AccountId::new(p.credit_account_id as u128);
+                    let id = TransferId::new(join_u128(p.id, p.id_high));
+                    let debit_account_id =
+                        AccountId::new(join_u128(p.debit_account_id, p.debit_account_id_high));
+                    let credit_account_id =
+                        AccountId::new(join_u128(p.credit_account_id, p.credit_account_id_high));
                     let amount = self.parse_amount(p.amount)?;
                     ops.push(IngestOp::CreatePending {
                         id,
@@ -394,8 +426,9 @@ impl proto::ledger_service_server::LedgerService for LedgerServer {
                     });
                 }
                 proto::batch_operation::Operation::PostPending(pp) => {
-                    let pending_id = TransferId::new(pp.pending_id as u128);
-                    let post_transfer_id = TransferId::new(pp.post_transfer_id as u128);
+                    let pending_id = TransferId::new(join_u128(pp.pending_id, pp.pending_id_high));
+                    let post_transfer_id =
+                        TransferId::new(join_u128(pp.post_transfer_id, pp.post_transfer_id_high));
                     let amount = self.parse_amount(pp.amount)?;
                     ops.push(IngestOp::PostPending {
                         pending_id,
@@ -405,7 +438,7 @@ impl proto::ledger_service_server::LedgerService for LedgerServer {
                     });
                 }
                 proto::batch_operation::Operation::VoidPending(vp) => {
-                    let pending_id = TransferId::new(vp.pending_id as u128);
+                    let pending_id = TransferId::new(join_u128(vp.pending_id, vp.pending_id_high));
                     ops.push(IngestOp::VoidPending {
                         pending_id,
                         timestamp: vp.timestamp,

@@ -51,7 +51,7 @@ message Balance {
 
 // A ledger account.
 message Account {
-  // Unique account ID.
+  // Unique account ID (lower 64 bits).
   uint64 id = 1;
   // Account type (asset, liability, equity, revenue, expense).
   AccountType account_type = 2;
@@ -61,6 +61,8 @@ message Account {
   uint32 scale = 4;
   // Current balances.
   Balance balance = 5;
+  // High 64 bits of 128-bit account ID (optional, defaults to 0).
+  uint64 id_high = 6;
 }
 
 // State of a transfer.
@@ -76,20 +78,28 @@ enum TransferState {
 
 // A transfer between two accounts.
 message Transfer {
-  // Unique transfer ID.
+  // Unique transfer ID (lower 64 bits).
   uint64 id = 1;
-  // Account being debited.
+  // Account being debited (lower 64 bits).
   uint64 debit_account_id = 2;
-  // Account being credited.
+  // Account being credited (lower 64 bits).
   uint64 credit_account_id = 3;
   // Monetary amount.
   Amount amount = 4;
   // Current lifecycle state.
   TransferState state = 5;
-  // Original pending transfer ID if this is a settlement of a hold.
+  // Original pending transfer ID if this is a settlement of a hold (lower 64 bits).
   optional uint64 pending_id = 6;
   // Sequence/wall-clock timestamp.
   uint64 timestamp = 7;
+  // High 64 bits of 128-bit transfer ID (optional, defaults to 0).
+  uint64 id_high = 8;
+  // High 64 bits of debit account ID (optional, defaults to 0).
+  uint64 debit_account_id_high = 9;
+  // High 64 bits of credit account ID (optional, defaults to 0).
+  uint64 credit_account_id_high = 10;
+  // High 64 bits of pending transfer ID (optional, defaults to 0).
+  optional uint64 pending_id_high = 11;
 }
 
 // Request to create a new ledger account.
@@ -99,6 +109,7 @@ message CreateAccountRequest {
   AccountFlags flags = 3;
   uint32 scale = 4;
   uint64 timestamp = 5;
+  uint64 id_high = 6;
 }
 
 // Response containing the created account.
@@ -113,6 +124,9 @@ message CreateTransferRequest {
   uint64 credit_account_id = 3;
   Amount amount = 4;
   uint64 timestamp = 5;
+  uint64 id_high = 6;
+  uint64 debit_account_id_high = 7;
+  uint64 credit_account_id_high = 8;
 }
 
 // Response containing the created transfer.
@@ -127,6 +141,9 @@ message CreatePendingRequest {
   uint64 credit_account_id = 3;
   Amount amount = 4;
   uint64 timestamp = 5;
+  uint64 id_high = 6;
+  uint64 debit_account_id_high = 7;
+  uint64 credit_account_id_high = 8;
 }
 
 // Response containing the created pending transfer.
@@ -140,6 +157,8 @@ message PostPendingRequest {
   uint64 post_transfer_id = 2;
   Amount amount = 3;
   uint64 timestamp = 4;
+  uint64 pending_id_high = 5;
+  uint64 post_transfer_id_high = 6;
 }
 
 // Response containing the posted settlement transfer.
@@ -151,6 +170,7 @@ message PostPendingResponse {
 message VoidPendingRequest {
   uint64 pending_id = 1;
   uint64 timestamp = 2;
+  uint64 pending_id_high = 3;
 }
 
 // Response containing the voided transfer.
@@ -161,6 +181,7 @@ message VoidPendingResponse {
 // Request to look up an account by ID.
 message GetAccountRequest {
   uint64 id = 1;
+  uint64 id_high = 2;
 }
 
 // Response containing the requested account.
@@ -171,6 +192,7 @@ message GetAccountResponse {
 // Request to look up a transfer by ID.
 message GetTransferRequest {
   uint64 id = 1;
+  uint64 id_high = 2;
 }
 
 // Response containing the requested transfer.

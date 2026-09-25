@@ -51,6 +51,109 @@ async fn start_test_server(queue_capacity: usize) -> TestEnv {
     TestEnv { addr, _dir: dir }
 }
 
+fn req_account(
+    id: u64,
+    account_type: AccountType,
+    flags: Option<AccountFlags>,
+    scale: u32,
+    timestamp: u64,
+) -> CreateAccountRequest {
+    CreateAccountRequest {
+        id,
+        account_type: account_type as i32,
+        flags,
+        scale,
+        timestamp,
+        ..Default::default()
+    }
+}
+
+fn req_transfer(
+    id: u64,
+    debit: u64,
+    credit: u64,
+    units: u64,
+    scale: u32,
+    timestamp: u64,
+) -> CreateTransferRequest {
+    CreateTransferRequest {
+        id,
+        debit_account_id: debit,
+        credit_account_id: credit,
+        amount: Some(Amount {
+            units,
+            scale,
+            units_high: 0,
+        }),
+        timestamp,
+        ..Default::default()
+    }
+}
+
+fn req_pending(
+    id: u64,
+    debit: u64,
+    credit: u64,
+    units: u64,
+    scale: u32,
+    timestamp: u64,
+) -> CreatePendingRequest {
+    CreatePendingRequest {
+        id,
+        debit_account_id: debit,
+        credit_account_id: credit,
+        amount: Some(Amount {
+            units,
+            scale,
+            units_high: 0,
+        }),
+        timestamp,
+        ..Default::default()
+    }
+}
+
+fn req_post(
+    pending_id: u64,
+    post_id: u64,
+    units: u64,
+    scale: u32,
+    timestamp: u64,
+) -> PostPendingRequest {
+    PostPendingRequest {
+        pending_id,
+        post_transfer_id: post_id,
+        amount: Some(Amount {
+            units,
+            scale,
+            units_high: 0,
+        }),
+        timestamp,
+        ..Default::default()
+    }
+}
+
+fn req_void(pending_id: u64, timestamp: u64) -> VoidPendingRequest {
+    VoidPendingRequest {
+        pending_id,
+        timestamp,
+        ..Default::default()
+    }
+}
+
+fn req_get_account(id: u64) -> GetAccountRequest {
+    GetAccountRequest {
+        id,
+        ..Default::default()
+    }
+}
+
+fn req_get_transfer(id: u64) -> GetTransferRequest {
+    GetTransferRequest {
+        id,
+        ..Default::default()
+    }
+}
+
 #[tokio::test]
 async fn grpc_lifecycle_and_error_matrix() {
     let env = start_test_server(100).await;
@@ -59,17 +162,17 @@ async fn grpc_lifecycle_and_error_matrix() {
         .expect("connect");
 
     let bank_resp = client
-        .create_account(CreateAccountRequest {
-            id: 1,
-            account_type: AccountType::Asset as i32,
-            flags: Some(AccountFlags {
+        .create_account(req_account(
+            1,
+            AccountType::Asset,
+            Some(AccountFlags {
                 debits_must_not_exceed_credits: false,
                 credits_must_not_exceed_debits: true,
                 is_closed: false,
             }),
-            scale: 6,
-            timestamp: 1,
-        })
+            6,
+            1,
+        ))
         .await
         .expect("create bank account")
         .into_inner();
@@ -78,49 +181,39 @@ async fn grpc_lifecycle_and_error_matrix() {
     assert_eq!(bank.account_type, AccountType::Asset as i32);
 
     let alice_resp = client
-        .create_account(CreateAccountRequest {
-            id: 2,
-            account_type: AccountType::Liability as i32,
-            flags: Some(AccountFlags {
+        .create_account(req_account(
+            2,
+            AccountType::Liability,
+            Some(AccountFlags {
                 debits_must_not_exceed_credits: true,
                 credits_must_not_exceed_debits: false,
                 is_closed: false,
             }),
-            scale: 6,
-            timestamp: 2,
-        })
+            6,
+            2,
+        ))
         .await
         .expect("create alice account")
         .into_inner();
     assert_eq!(alice_resp.account.unwrap().id, 2);
 
     client
-        .create_account(CreateAccountRequest {
-            id: 3,
-            account_type: AccountType::Liability as i32,
-            flags: Some(AccountFlags {
+        .create_account(req_account(
+            3,
+            AccountType::Liability,
+            Some(AccountFlags {
                 debits_must_not_exceed_credits: true,
                 credits_must_not_exceed_debits: false,
                 is_closed: false,
             }),
-            scale: 6,
-            timestamp: 3,
-        })
+            6,
+            3,
+        ))
         .await
         .expect("create merchant account");
 
     let fund_resp = client
-        .create_transfer(CreateTransferRequest {
-            id: 100,
-            debit_account_id: 1,
-            credit_account_id: 2,
-            amount: Some(Amount {
-                units: 10_000_000,
-                scale: 6,
-                units_high: 0,
-            }),
-            timestamp: 4,
-        })
+        .create_transfer(req_transfer(100, 1, 2, 10_000_000, 6, 4))
         .await
         .expect("fund alice")
         .into_inner();
@@ -128,17 +221,7 @@ async fn grpc_lifecycle_and_error_matrix() {
     assert_eq!(fund_transfer.state, TransferState::Posted as i32);
 
     let pay_resp = client
-        .create_transfer(CreateTransferRequest {
-            id: 101,
-            debit_account_id: 2,
-            credit_account_id: 3,
-            amount: Some(Amount {
-                units: 4_000_000,
-                scale: 6,
-                units_high: 0,
-            }),
-            timestamp: 5,
-        })
+        .create_transfer(req_transfer(101, 2, 3, 4_000_000, 6, 5))
         .await
         .expect("alice pays merchant")
         .into_inner();
@@ -146,7 +229,7 @@ async fn grpc_lifecycle_and_error_matrix() {
     assert_eq!(pay_transfer.state, TransferState::Posted as i32);
 
     let alice_acc = client
-        .get_account(GetAccountRequest { id: 2 })
+        .get_account(req_get_account(2))
         .await
         .expect("get alice")
         .into_inner()
@@ -157,17 +240,7 @@ async fn grpc_lifecycle_and_error_matrix() {
     assert_eq!(alice_bal.credits_posted.unwrap().units, 10_000_000);
 
     let hold_resp = client
-        .create_pending(CreatePendingRequest {
-            id: 200,
-            debit_account_id: 2,
-            credit_account_id: 3,
-            amount: Some(Amount {
-                units: 2_000_000,
-                scale: 6,
-                units_high: 0,
-            }),
-            timestamp: 6,
-        })
+        .create_pending(req_pending(200, 2, 3, 2_000_000, 6, 6))
         .await
         .expect("hold")
         .into_inner();
@@ -177,16 +250,7 @@ async fn grpc_lifecycle_and_error_matrix() {
     );
 
     let post_resp = client
-        .post_pending(PostPendingRequest {
-            pending_id: 200,
-            post_transfer_id: 201,
-            amount: Some(Amount {
-                units: 2_000_000,
-                scale: 6,
-                units_high: 0,
-            }),
-            timestamp: 7,
-        })
+        .post_pending(req_post(200, 201, 2_000_000, 6, 7))
         .await
         .expect("post pending")
         .into_inner();
@@ -196,7 +260,7 @@ async fn grpc_lifecycle_and_error_matrix() {
     );
 
     let get_post = client
-        .get_transfer(GetTransferRequest { id: 201 })
+        .get_transfer(req_get_transfer(201))
         .await
         .expect("get posted transfer")
         .into_inner()
@@ -206,25 +270,12 @@ async fn grpc_lifecycle_and_error_matrix() {
     assert_eq!(get_post.pending_id, Some(200));
 
     client
-        .create_pending(CreatePendingRequest {
-            id: 300,
-            debit_account_id: 2,
-            credit_account_id: 3,
-            amount: Some(Amount {
-                units: 1_000_000,
-                scale: 6,
-                units_high: 0,
-            }),
-            timestamp: 8,
-        })
+        .create_pending(req_pending(300, 2, 3, 1_000_000, 6, 8))
         .await
         .expect("hold 2");
 
     let void_resp = client
-        .void_pending(VoidPendingRequest {
-            pending_id: 300,
-            timestamp: 9,
-        })
+        .void_pending(req_void(300, 9))
         .await
         .expect("void pending")
         .into_inner();
@@ -234,7 +285,7 @@ async fn grpc_lifecycle_and_error_matrix() {
     );
 
     let get_void = client
-        .get_transfer(GetTransferRequest { id: 300 })
+        .get_transfer(req_get_transfer(300))
         .await
         .expect("get voided transfer")
         .into_inner()
@@ -243,61 +294,25 @@ async fn grpc_lifecycle_and_error_matrix() {
     assert_eq!(get_void.state, TransferState::Voided as i32);
 
     let err_funds = client
-        .create_transfer(CreateTransferRequest {
-            id: 400,
-            debit_account_id: 2,
-            credit_account_id: 3,
-            amount: Some(Amount {
-                units: 999_999_999,
-                scale: 6,
-                units_high: 0,
-            }),
-            timestamp: 10,
-        })
+        .create_transfer(req_transfer(400, 2, 3, 999_999_999, 6, 10))
         .await
         .expect_err("insufficient funds must fail");
     assert_eq!(err_funds.code(), tonic::Code::FailedPrecondition);
 
     let err_not_found = client
-        .create_transfer(CreateTransferRequest {
-            id: 401,
-            debit_account_id: 99999,
-            credit_account_id: 3,
-            amount: Some(Amount {
-                units: 100,
-                scale: 6,
-                units_high: 0,
-            }),
-            timestamp: 11,
-        })
+        .create_transfer(req_transfer(401, 99999, 3, 100, 6, 11))
         .await
         .expect_err("account not found must fail");
     assert_eq!(err_not_found.code(), tonic::Code::NotFound);
 
     let err_dup_acc = client
-        .create_account(CreateAccountRequest {
-            id: 1,
-            account_type: AccountType::Asset as i32,
-            flags: None,
-            scale: 6,
-            timestamp: 12,
-        })
+        .create_account(req_account(1, AccountType::Asset, None, 6, 12))
         .await
         .expect_err("duplicate account must fail");
     assert_eq!(err_dup_acc.code(), tonic::Code::AlreadyExists);
 
     let err_dup_xfer = client
-        .create_transfer(CreateTransferRequest {
-            id: 100,
-            debit_account_id: 1,
-            credit_account_id: 2,
-            amount: Some(Amount {
-                units: 100,
-                scale: 6,
-                units_high: 0,
-            }),
-            timestamp: 13,
-        })
+        .create_transfer(req_transfer(100, 1, 2, 100, 6, 13))
         .await
         .expect_err("duplicate transfer must fail");
     assert_eq!(err_dup_xfer.code(), tonic::Code::AlreadyExists);
@@ -307,28 +322,12 @@ async fn grpc_lifecycle_and_error_matrix() {
             operations: vec![
                 BatchOperation {
                     operation: Some(ingest::proto::batch_operation::Operation::CreateAccount(
-                        CreateAccountRequest {
-                            id: 10,
-                            account_type: AccountType::Liability as i32,
-                            flags: None,
-                            scale: 6,
-                            timestamp: 14,
-                        },
+                        req_account(10, AccountType::Liability, None, 6, 14),
                     )),
                 },
                 BatchOperation {
                     operation: Some(ingest::proto::batch_operation::Operation::CreateTransfer(
-                        CreateTransferRequest {
-                            id: 500,
-                            debit_account_id: 1,
-                            credit_account_id: 10,
-                            amount: Some(Amount {
-                                units: 500_000,
-                                scale: 6,
-                                units_high: 0,
-                            }),
-                            timestamp: 15,
-                        },
+                        req_transfer(500, 1, 10, 500_000, 6, 15),
                     )),
                 },
             ],
@@ -347,28 +346,22 @@ async fn test_fifo_causality_apply_batch_then_transfer() {
         .expect("connect");
 
     client
-        .create_account(CreateAccountRequest {
-            id: 1,
-            account_type: AccountType::Asset as i32,
-            flags: Some(AccountFlags {
+        .create_account(req_account(
+            1,
+            AccountType::Asset,
+            Some(AccountFlags {
                 debits_must_not_exceed_credits: false,
                 credits_must_not_exceed_debits: true,
                 is_closed: false,
             }),
-            scale: 6,
-            timestamp: 1,
-        })
+            6,
+            1,
+        ))
         .await
         .expect("create bank");
 
     client
-        .create_account(CreateAccountRequest {
-            id: 2,
-            account_type: AccountType::Liability as i32,
-            flags: None,
-            scale: 6,
-            timestamp: 2,
-        })
+        .create_account(req_account(2, AccountType::Liability, None, 6, 2))
         .await
         .expect("create merchant");
 
@@ -377,49 +370,28 @@ async fn test_fifo_causality_apply_batch_then_transfer() {
         operations: vec![
             BatchOperation {
                 operation: Some(ingest::proto::batch_operation::Operation::CreateAccount(
-                    CreateAccountRequest {
-                        id: 77,
-                        account_type: AccountType::Liability as i32,
-                        flags: Some(AccountFlags {
+                    req_account(
+                        77,
+                        AccountType::Liability,
+                        Some(AccountFlags {
                             debits_must_not_exceed_credits: true,
                             credits_must_not_exceed_debits: false,
                             is_closed: false,
                         }),
-                        scale: 6,
-                        timestamp: 3,
-                    },
+                        6,
+                        3,
+                    ),
                 )),
             },
             BatchOperation {
                 operation: Some(ingest::proto::batch_operation::Operation::CreateTransfer(
-                    CreateTransferRequest {
-                        id: 770,
-                        debit_account_id: 1,
-                        credit_account_id: 77,
-                        amount: Some(Amount {
-                            units: 2_000_000,
-                            scale: 6,
-                            units_high: 0,
-                        }),
-                        timestamp: 4,
-                    },
+                    req_transfer(770, 1, 77, 2_000_000, 6, 4),
                 )),
             },
         ],
     });
 
-    // Invariant: FIFO execution ensures account 77 is committed before subsequent transfer runs.
-    let transfer_future = client2.create_transfer(CreateTransferRequest {
-        id: 771,
-        debit_account_id: 77,
-        credit_account_id: 2,
-        amount: Some(Amount {
-            units: 500_000,
-            scale: 6,
-            units_high: 0,
-        }),
-        timestamp: 5,
-    });
+    let transfer_future = client2.create_transfer(req_transfer(771, 77, 2, 500_000, 6, 5));
 
     let (batch_res, transfer_res) = tokio::join!(batch_future, transfer_future);
 
@@ -436,7 +408,7 @@ async fn test_fifo_causality_apply_batch_then_transfer() {
     assert_eq!(xfer.state, TransferState::Posted as i32);
 
     let acc77 = client
-        .get_account(GetAccountRequest { id: 77 })
+        .get_account(req_get_account(77))
         .await
         .expect("get account 77")
         .into_inner()
@@ -455,24 +427,12 @@ async fn test_auto_timestamp_allocation_and_monotonicity() {
         .expect("connect");
 
     client
-        .create_account(CreateAccountRequest {
-            id: 1,
-            account_type: AccountType::Asset as i32,
-            flags: None,
-            scale: 6,
-            timestamp: 1_000_000,
-        })
+        .create_account(req_account(1, AccountType::Asset, None, 6, 1_000_000))
         .await
         .expect("create bank");
 
     let cust_resp = client
-        .create_account(CreateAccountRequest {
-            id: 2,
-            account_type: AccountType::Liability as i32,
-            flags: None,
-            scale: 6,
-            timestamp: 0,
-        })
+        .create_account(req_account(2, AccountType::Liability, None, 6, 0))
         .await
         .expect("create customer with 0 timestamp")
         .into_inner();
@@ -480,17 +440,7 @@ async fn test_auto_timestamp_allocation_and_monotonicity() {
     assert_eq!(cust_acc.id, 2);
 
     let xfer_resp = client
-        .create_transfer(CreateTransferRequest {
-            id: 10,
-            debit_account_id: 1,
-            credit_account_id: 2,
-            amount: Some(Amount {
-                units: 1_000_000,
-                scale: 6,
-                units_high: 0,
-            }),
-            timestamp: 0,
-        })
+        .create_transfer(req_transfer(10, 1, 2, 1_000_000, 6, 0))
         .await
         .expect("create transfer with 0 timestamp")
         .into_inner();
@@ -502,17 +452,7 @@ async fn test_auto_timestamp_allocation_and_monotonicity() {
     );
 
     let pending_resp = client
-        .create_pending(CreatePendingRequest {
-            id: 20,
-            debit_account_id: 1,
-            credit_account_id: 2,
-            amount: Some(Amount {
-                units: 500_000,
-                scale: 6,
-                units_high: 0,
-            }),
-            timestamp: 0,
-        })
+        .create_pending(req_pending(20, 1, 2, 500_000, 6, 0))
         .await
         .expect("create pending with 0 timestamp")
         .into_inner();
@@ -525,16 +465,7 @@ async fn test_auto_timestamp_allocation_and_monotonicity() {
     );
 
     let post_resp = client
-        .post_pending(PostPendingRequest {
-            pending_id: 20,
-            post_transfer_id: 21,
-            amount: Some(Amount {
-                units: 500_000,
-                scale: 6,
-                units_high: 0,
-            }),
-            timestamp: 0,
-        })
+        .post_pending(req_post(20, 21, 500_000, 6, 0))
         .await
         .expect("post pending with 0 timestamp")
         .into_inner();
@@ -555,13 +486,7 @@ async fn test_apply_batch_with_zero_timestamps() {
         .expect("connect");
 
     client
-        .create_account(CreateAccountRequest {
-            id: 1,
-            account_type: AccountType::Asset as i32,
-            flags: None,
-            scale: 6,
-            timestamp: 500_000,
-        })
+        .create_account(req_account(1, AccountType::Asset, None, 6, 500_000))
         .await
         .expect("seed account");
 
@@ -570,28 +495,12 @@ async fn test_apply_batch_with_zero_timestamps() {
             operations: vec![
                 BatchOperation {
                     operation: Some(ingest::proto::batch_operation::Operation::CreateAccount(
-                        CreateAccountRequest {
-                            id: 2,
-                            account_type: AccountType::Liability as i32,
-                            flags: None,
-                            scale: 6,
-                            timestamp: 0,
-                        },
+                        req_account(2, AccountType::Liability, None, 6, 0),
                     )),
                 },
                 BatchOperation {
                     operation: Some(ingest::proto::batch_operation::Operation::CreateTransfer(
-                        CreateTransferRequest {
-                            id: 100,
-                            debit_account_id: 1,
-                            credit_account_id: 2,
-                            amount: Some(Amount {
-                                units: 100_000,
-                                scale: 6,
-                                units_high: 0,
-                            }),
-                            timestamp: 0,
-                        },
+                        req_transfer(100, 1, 2, 100_000, 6, 0),
                     )),
                 },
             ],
@@ -602,7 +511,7 @@ async fn test_apply_batch_with_zero_timestamps() {
     assert_eq!(batch_resp.applied_count, 2);
 
     let xfer = client
-        .get_transfer(GetTransferRequest { id: 100 })
+        .get_transfer(req_get_transfer(100))
         .await
         .expect("get transfer")
         .into_inner()
@@ -623,54 +532,22 @@ async fn test_scale_mismatch_rejected() {
         .expect("connect");
 
     client
-        .create_account(CreateAccountRequest {
-            id: 1,
-            account_type: AccountType::Asset as i32,
-            flags: None,
-            scale: 6,
-            timestamp: 1,
-        })
+        .create_account(req_account(1, AccountType::Asset, None, 6, 1))
         .await
         .expect("seed 1");
     client
-        .create_account(CreateAccountRequest {
-            id: 2,
-            account_type: AccountType::Liability as i32,
-            flags: None,
-            scale: 6,
-            timestamp: 2,
-        })
+        .create_account(req_account(2, AccountType::Liability, None, 6, 2))
         .await
         .expect("seed 2");
 
     let err = client
-        .create_transfer(CreateTransferRequest {
-            id: 10,
-            debit_account_id: 1,
-            credit_account_id: 2,
-            amount: Some(Amount {
-                units: 1000,
-                scale: 2,
-                units_high: 0,
-            }),
-            timestamp: 3,
-        })
+        .create_transfer(req_transfer(10, 1, 2, 1000, 2, 3))
         .await
         .expect_err("scale mismatch must be rejected");
     assert_eq!(err.code(), tonic::Code::InvalidArgument);
 
     let err_scale_overflow = client
-        .create_transfer(CreateTransferRequest {
-            id: 11,
-            debit_account_id: 1,
-            credit_account_id: 2,
-            amount: Some(Amount {
-                units: 1000,
-                scale: 500,
-                units_high: 0,
-            }),
-            timestamp: 4,
-        })
+        .create_transfer(req_transfer(11, 1, 2, 1000, 500, 4))
         .await
         .expect_err("scale exceeding u8 must be rejected");
     assert_eq!(err_scale_overflow.code(), tonic::Code::InvalidArgument);
@@ -684,58 +561,42 @@ async fn test_intra_batch_failure_isolation_and_concurrent_group_commit() {
         .expect("connect");
 
     client
-        .create_account(CreateAccountRequest {
-            id: 1,
-            account_type: AccountType::Asset as i32,
-            flags: Some(AccountFlags {
+        .create_account(req_account(
+            1,
+            AccountType::Asset,
+            Some(AccountFlags {
                 debits_must_not_exceed_credits: false,
                 credits_must_not_exceed_debits: true,
                 is_closed: false,
             }),
-            scale: 6,
-            timestamp: 1,
-        })
+            6,
+            1,
+        ))
         .await
         .expect("bank");
 
     client
-        .create_account(CreateAccountRequest {
-            id: 2,
-            account_type: AccountType::Liability as i32,
-            flags: Some(AccountFlags {
+        .create_account(req_account(
+            2,
+            AccountType::Liability,
+            Some(AccountFlags {
                 debits_must_not_exceed_credits: true,
                 credits_must_not_exceed_debits: false,
                 is_closed: false,
             }),
-            scale: 6,
-            timestamp: 2,
-        })
+            6,
+            2,
+        ))
         .await
         .expect("customer");
 
     client
-        .create_account(CreateAccountRequest {
-            id: 3,
-            account_type: AccountType::Liability as i32,
-            flags: None,
-            scale: 6,
-            timestamp: 3,
-        })
+        .create_account(req_account(3, AccountType::Liability, None, 6, 3))
         .await
         .expect("merchant");
 
     client
-        .create_transfer(CreateTransferRequest {
-            id: 10,
-            debit_account_id: 1,
-            credit_account_id: 2,
-            amount: Some(Amount {
-                units: 10_000_000,
-                scale: 6,
-                units_high: 0,
-            }),
-            timestamp: 4,
-        })
+        .create_transfer(req_transfer(10, 1, 2, 10_000_000, 6, 4))
         .await
         .expect("fund customer");
 
@@ -747,65 +608,25 @@ async fn test_intra_batch_failure_isolation_and_concurrent_group_commit() {
     let mut c5 = LedgerServiceClient::connect(url.clone()).await.unwrap();
 
     let h1 = tokio::spawn(async move {
-        c1.create_transfer(CreateTransferRequest {
-            id: 101,
-            debit_account_id: 2,
-            credit_account_id: 3,
-            amount: Some(Amount {
-                units: 2_000_000,
-                scale: 6,
-                units_high: 0,
-            }),
-            timestamp: 0,
-        })
-        .await
+        c1.create_transfer(req_transfer(101, 2, 3, 2_000_000, 6, 0))
+            .await
     });
 
     let h2 = tokio::spawn(async move {
-        c2.create_transfer(CreateTransferRequest {
-            id: 102,
-            debit_account_id: 2,
-            credit_account_id: 3,
-            amount: Some(Amount {
-                units: 50_000_000,
-                scale: 6,
-                units_high: 0,
-            }),
-            timestamp: 0,
-        })
-        .await
+        c2.create_transfer(req_transfer(102, 2, 3, 50_000_000, 6, 0))
+            .await
     });
 
     let h3 = tokio::spawn(async move {
-        c3.create_transfer(CreateTransferRequest {
-            id: 103,
-            debit_account_id: 2,
-            credit_account_id: 3,
-            amount: Some(Amount {
-                units: 3_000_000,
-                scale: 6,
-                units_high: 0,
-            }),
-            timestamp: 0,
-        })
-        .await
+        c3.create_transfer(req_transfer(103, 2, 3, 3_000_000, 6, 0))
+            .await
     });
 
     let h4 = tokio::spawn(async move {
         c4.apply_batch(ApplyBatchRequest {
             operations: vec![BatchOperation {
                 operation: Some(ingest::proto::batch_operation::Operation::CreateTransfer(
-                    CreateTransferRequest {
-                        id: 104,
-                        debit_account_id: 2,
-                        credit_account_id: 3,
-                        amount: Some(Amount {
-                            units: 99_000_000,
-                            scale: 6,
-                            units_high: 0,
-                        }),
-                        timestamp: 0,
-                    },
+                    req_transfer(104, 2, 3, 99_000_000, 6, 0),
                 )),
             }],
         })
@@ -816,17 +637,7 @@ async fn test_intra_batch_failure_isolation_and_concurrent_group_commit() {
         c5.apply_batch(ApplyBatchRequest {
             operations: vec![BatchOperation {
                 operation: Some(ingest::proto::batch_operation::Operation::CreateTransfer(
-                    CreateTransferRequest {
-                        id: 105,
-                        debit_account_id: 2,
-                        credit_account_id: 3,
-                        amount: Some(Amount {
-                            units: 1_000_000,
-                            scale: 6,
-                            units_high: 0,
-                        }),
-                        timestamp: 0,
-                    },
+                    req_transfer(105, 2, 3, 1_000_000, 6, 0),
                 )),
             }],
         })
@@ -858,7 +669,7 @@ async fn test_intra_batch_failure_isolation_and_concurrent_group_commit() {
     assert!(res5.is_ok(), "valid batch 105 must succeed");
 
     let cust = client
-        .get_account(GetAccountRequest { id: 2 })
+        .get_account(req_get_account(2))
         .await
         .unwrap()
         .into_inner()
@@ -869,7 +680,7 @@ async fn test_intra_batch_failure_isolation_and_concurrent_group_commit() {
     assert_eq!(bal.debits_posted.unwrap().units, 6_000_000);
 
     let err_xfer = client
-        .get_transfer(GetTransferRequest { id: 104 })
+        .get_transfer(req_get_transfer(104))
         .await
         .expect_err("transfer from failed batch must not exist");
     assert_eq!(err_xfer.code(), tonic::Code::NotFound);
@@ -883,13 +694,7 @@ async fn test_concurrent_apply_batch_group_commit() {
         .expect("connect");
 
     client
-        .create_account(CreateAccountRequest {
-            id: 1,
-            account_type: AccountType::Asset as i32,
-            flags: None,
-            scale: 6,
-            timestamp: 1,
-        })
+        .create_account(req_account(1, AccountType::Asset, None, 6, 1))
         .await
         .expect("bank");
 
@@ -906,28 +711,12 @@ async fn test_concurrent_apply_batch_group_commit() {
                 operations: vec![
                     BatchOperation {
                         operation: Some(ingest::proto::batch_operation::Operation::CreateAccount(
-                            CreateAccountRequest {
-                                id: acc_id,
-                                account_type: AccountType::Liability as i32,
-                                flags: None,
-                                scale: 6,
-                                timestamp: 0,
-                            },
+                            req_account(acc_id, AccountType::Liability, None, 6, 0),
                         )),
                     },
                     BatchOperation {
                         operation: Some(ingest::proto::batch_operation::Operation::CreateTransfer(
-                            CreateTransferRequest {
-                                id: xfer_id,
-                                debit_account_id: 1,
-                                credit_account_id: acc_id,
-                                amount: Some(Amount {
-                                    units: 100_000 * (i + 1),
-                                    scale: 6,
-                                    units_high: 0,
-                                }),
-                                timestamp: 0,
-                            },
+                            req_transfer(xfer_id, 1, acc_id, 100_000 * (i + 1), 6, 0),
                         )),
                     },
                 ],
@@ -945,7 +734,7 @@ async fn test_concurrent_apply_batch_group_commit() {
     for i in 0..10u64 {
         let acc_id = 1000 + i;
         let acc = client
-            .get_account(GetAccountRequest { id: acc_id })
+            .get_account(req_get_account(acc_id))
             .await
             .unwrap()
             .into_inner()
@@ -959,4 +748,105 @@ async fn test_concurrent_apply_batch_group_commit() {
             acc_id
         );
     }
+}
+
+#[tokio::test]
+async fn test_128_bit_id_roundtrip_and_preservation() {
+    let env = start_test_server(100).await;
+    let mut client = LedgerServiceClient::connect(format!("http://{}", env.addr))
+        .await
+        .expect("connect");
+
+    let acc1_low = 0xAAAA_BBBB_CCCC_DDDDu64;
+    let acc1_high = 0x1111_2222_3333_4444u64;
+    let acc2_low = 0xEEEE_FFFF_0000_1111u64;
+    let acc2_high = 0x5555_6666_7777_8888u64;
+    let xfer_low = 0x1234_5678_9ABC_DEF0u64;
+    let xfer_high = 0xFEDC_BA98_7654_3210u64;
+
+    let res1 = client
+        .create_account(CreateAccountRequest {
+            id: acc1_low,
+            id_high: acc1_high,
+            account_type: AccountType::Asset as i32,
+            flags: None,
+            scale: 6,
+            timestamp: 1,
+        })
+        .await
+        .expect("create acc1 with 128-bit id")
+        .into_inner();
+    let acc1 = res1.account.expect("acc1");
+    assert_eq!(acc1.id, acc1_low);
+    assert_eq!(acc1.id_high, acc1_high);
+
+    let res2 = client
+        .create_account(CreateAccountRequest {
+            id: acc2_low,
+            id_high: acc2_high,
+            account_type: AccountType::Liability as i32,
+            flags: None,
+            scale: 6,
+            timestamp: 2,
+        })
+        .await
+        .expect("create acc2 with 128-bit id")
+        .into_inner();
+    let acc2 = res2.account.expect("acc2");
+    assert_eq!(acc2.id, acc2_low);
+    assert_eq!(acc2.id_high, acc2_high);
+
+    let xfer_res = client
+        .create_transfer(CreateTransferRequest {
+            id: xfer_low,
+            id_high: xfer_high,
+            debit_account_id: acc1_low,
+            debit_account_id_high: acc1_high,
+            credit_account_id: acc2_low,
+            credit_account_id_high: acc2_high,
+            amount: Some(Amount {
+                units: 5_000_000,
+                scale: 6,
+                units_high: 0,
+            }),
+            timestamp: 3,
+        })
+        .await
+        .expect("transfer with 128-bit ids")
+        .into_inner();
+    let xfer = xfer_res.transfer.expect("transfer");
+    assert_eq!(xfer.id, xfer_low);
+    assert_eq!(xfer.id_high, xfer_high);
+    assert_eq!(xfer.debit_account_id, acc1_low);
+    assert_eq!(xfer.debit_account_id_high, acc1_high);
+    assert_eq!(xfer.credit_account_id, acc2_low);
+    assert_eq!(xfer.credit_account_id_high, acc2_high);
+
+    let get_xfer_res = client
+        .get_transfer(GetTransferRequest {
+            id: xfer_low,
+            id_high: xfer_high,
+        })
+        .await
+        .expect("get transfer by 128-bit id")
+        .into_inner();
+    let got_xfer = get_xfer_res.transfer.expect("got xfer");
+    assert_eq!(got_xfer.id, xfer_low);
+    assert_eq!(got_xfer.id_high, xfer_high);
+
+    let get_acc2_res = client
+        .get_account(GetAccountRequest {
+            id: acc2_low,
+            id_high: acc2_high,
+        })
+        .await
+        .expect("get account by 128-bit id")
+        .into_inner();
+    let got_acc2 = get_acc2_res.account.expect("got acc2");
+    assert_eq!(got_acc2.id, acc2_low);
+    assert_eq!(got_acc2.id_high, acc2_high);
+    assert_eq!(
+        got_acc2.balance.unwrap().credits_posted.unwrap().units,
+        5_000_000
+    );
 }

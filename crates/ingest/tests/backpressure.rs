@@ -60,6 +60,7 @@ async fn backpressure_burst_sheds_load_with_resource_exhausted() {
                 }),
                 scale: 6,
                 timestamp: 1,
+                id_high: 0,
             })
             .await
             .expect("seed account created");
@@ -77,7 +78,10 @@ async fn backpressure_burst_sheds_load_with_resource_exhausted() {
 
         handles.push(tokio::spawn(async move {
             if let Ok(mut client) = LedgerServiceClient::connect(url).await {
-                match client.get_account(GetAccountRequest { id: 1 }).await {
+                match client
+                    .get_account(GetAccountRequest { id: 1, id_high: 0 })
+                    .await
+                {
                     Ok(_) => {
                         success.fetch_add(1, Ordering::Relaxed);
                     }
@@ -107,7 +111,7 @@ async fn backpressure_burst_sheds_load_with_resource_exhausted() {
         .await
         .expect("connect after burst");
     let resp = post_burst_client
-        .get_account(GetAccountRequest { id: 1 })
+        .get_account(GetAccountRequest { id: 1, id_high: 0 })
         .await
         .expect("server must remain operational after burst");
     assert_eq!(resp.into_inner().account.unwrap().id, 1);
