@@ -349,21 +349,14 @@ impl Ledger {
         Ok(())
     }
 
-    /// Validate a batch of operations and return the journal events it would emit,
-    /// without persisting any change to this ledger.
+    /// Speculatively validates a batch of operations and returns emitted journal events.
     ///
-    /// Validation runs speculatively against live state (an O(batch) apply
-    /// with no whole-ledger clone) and is then rolled back; on success this
-    /// ledger is left unchanged and the returned events are exactly what a
-    /// later [`Self::commit_events`] will apply. For the write-ahead flow:
-    /// persist the returned events, then commit them. Committing re-validates
-    /// every event, so it fails cleanly if this ledger changed since the
-    /// prepare (the single-writer wal contract).
+    /// The ledger state is left unmodified. Emitted events must be durably written to the
+    /// write-ahead log before applying via [`Self::commit_events`].
     ///
     /// # Errors
     ///
-    /// Returns [`LedgerError`] on the first operation that fails validation or
-    /// balance limits; on error, this ledger is unchanged.
+    /// Returns [`LedgerError`] on the first operation that fails validation or balance limits.
     pub fn prepare_batch(&mut self, ops: &[BatchOp]) -> Result<Vec<LedgerEvent>, LedgerError> {
         let base_journal_len = self.journal.len();
         let base_timestamp = self.last_timestamp;
@@ -389,25 +382,14 @@ impl Ledger {
         Ok(produced)
     }
 
-    /// Speculatively prepare a sequence of transactions, where each transaction is a sequence
-    /// of [`BatchOp`]s that must succeed atomically.
+    /// Speculatively prepares atomic multi-operation transactions.
     ///
-    /// If all operations in a transaction succeed, its speculative state modifications remain
-    /// visible to subsequent transactions in the slice, and its emitted [`LedgerEvent`]s are
-    /// returned in `Ok(events)`.
-    ///
-    /// If any operation in a transaction fails, all speculative modifications from that
-    /// transaction are rolled back, its error is recorded in `Err(err)`, and execution proceeds
-    /// to the next transaction.
-    ///
-    /// At the conclusion of this method, all speculative changes are rolled back to the ledger's
-    /// pre-call state. The caller is responsible for persisting all produced events to the
-    /// write-ahead log before applying them permanently via [`Self::commit_events`].
+    /// Each transaction succeeds or fails as an atomic unit. Speculative state is rolled back
+    /// before returning.
     ///
     /// # Errors
     ///
-    /// Individual transaction results contain [`LedgerError`] if an operation within that
-    /// transaction fails domain validation, insufficient balance limits, or account invariants.
+    /// Individual results contain [`LedgerError`] on validation or balance failures.
     pub fn prepare_transactions(
         &mut self,
         txs: &[Vec<BatchOp>],
@@ -451,22 +433,13 @@ impl Ledger {
         results
     }
 
-    /// Speculatively prepare a batch of operations individually, returning a per-operation
-    /// result without aborting the batch on individual failures.
+    /// Speculatively prepares operations individually, isolating failures without aborting the batch.
     ///
-    /// Operations that succeed mutate the speculative ledger state so that later operations
-    /// in the same batch observe their effects (e.g. creating an account before transferring to it).
-    /// If an operation fails, any speculative mutations from that operation are rolled back,
-    /// its error is recorded, and execution proceeds with the next operation.
-    ///
-    /// At the conclusion of this method, all speculative changes are rolled back to the ledger's
-    /// pre-call state. The caller is responsible for persisting all produced events to the
-    /// write-ahead log before applying them permanently via [`Self::commit_events`].
+    /// All speculative state is rolled back before returning.
     ///
     /// # Errors
     ///
-    /// Individual entries in the returned vector contain [`LedgerError`] if an operation fails
-    /// domain validation, overdraft checks, scale mismatches, or state transition invariants.
+    /// Individual results contain [`LedgerError`] on validation or balance failures.
     pub fn prepare_batch_results(
         &mut self,
         ops: &[BatchOp],

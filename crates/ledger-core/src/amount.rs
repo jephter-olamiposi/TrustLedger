@@ -134,7 +134,7 @@ impl Amount {
     ///
     /// # Errors
     ///
-    /// Returns [`LedgerError::ArithmeticOverflow`] if `other > self`.
+    /// Returns [`LedgerError::ArithmeticOverflow`] if subtraction would underflow (`other > self`).
     pub fn checked_sub(self, other: Self) -> Result<Self, LedgerError> {
         self.0
             .checked_sub(other.0)
@@ -173,7 +173,7 @@ impl Amount {
             return self.0.to_string();
         }
 
-        let mult = 10u128.pow(scale.0 as u32);
+        let mult = scale.multiplier().unwrap_or(1);
         let integer_part = self.0 / mult;
         let fractional_part = self.0 % mult;
 

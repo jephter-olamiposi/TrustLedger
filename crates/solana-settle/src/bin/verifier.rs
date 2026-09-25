@@ -37,10 +37,7 @@ struct Cli {
 
 fn main() -> ExitCode {
     let args = Cli::parse();
-
-    println!("============================================================");
-    println!("       TrustLedger Cryptographic Settlement Verifier        ");
-    println!("============================================================");
+    println!("TrustLedger Cryptographic Settlement Verifier");
 
     if let Some(receipt_path) = args.receipt {
         verify_receipt_file(&receipt_path)
@@ -66,7 +63,6 @@ fn verify_receipt_file(path: &PathBuf) -> ExitCode {
         }
     };
 
-    println!("------------------------------------------------------------");
     println!("Transfer Details:");
     println!("  Transfer ID:    {}", receipt.transfer_id);
     println!("  Debit Account:  {}", receipt.debit_account);
@@ -80,7 +76,6 @@ fn verify_receipt_file(path: &PathBuf) -> ExitCode {
         receipt.proof.siblings.len(),
         receipt.proof.peaks.len()
     );
-    println!("------------------------------------------------------------");
 
     match receipt.verify() {
         Ok(()) => {

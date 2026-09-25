@@ -490,7 +490,7 @@ async fn handle_webhook(
     let payload: WebhookPayload =
         serde_json::from_str(&body).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
 
-    let now = 1_700_000_100;
+    let now = state.next_timestamp();
     WebhookVerifier::verify_freshness(payload.timestamp, now, 300)
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
 
@@ -737,12 +737,13 @@ async fn handle_reconciliation(
     let merchants = vec![1, 2, 3];
     let chain_root = state.solana_rail.current_settlement_root();
 
+    let audit_timestamp = state.next_timestamp();
     let mut report = ReconciliationEngine::audit(
         &payments,
         &ledger,
         &merchants,
         chain_root.as_ref(),
-        1_700_000_200,
+        audit_timestamp,
     )
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
@@ -929,12 +930,13 @@ async fn handle_dashboard_data(
         )
     })?;
 
+    let audit_timestamp = state.next_timestamp();
     let mut recon = ReconciliationEngine::audit(
         &payments,
         &ledger_guard,
         &merchants,
         chain_root.as_ref(),
-        1_700_000_200,
+        audit_timestamp,
     )
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
@@ -987,7 +989,7 @@ async fn handle_quick_seed(
         (101, 3, 20_000_000u128, 200_000u128, "voided"),
     ];
 
-    // Seed the customer liabilities from the vault before placing holds.
+    // Overdraft protection rejects holds unless customer liabilities are seeded from the vault first.
     {
         let mut ledger = state.ledger.write().map_err(|_| {
             (

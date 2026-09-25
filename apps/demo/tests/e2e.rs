@@ -156,6 +156,9 @@ fn test_webhook_hmac_tamper_and_replay_protection() {
     let fresh_event_time = now - 60; // 1 minute ago
     assert!(WebhookVerifier::verify_freshness(fresh_event_time, now, 300).is_ok());
 
+    let future_event_time = now + 600; // 10 minutes in future (tolerance 300s)
+    assert!(WebhookVerifier::verify_freshness(future_event_time, now, 300).is_err());
+
     let dedupe = demo::webhook::WebhookDeduplicator::new();
     assert!(dedupe.check_and_record("evt_unique_1").is_ok());
     assert!(dedupe.check_and_record("evt_unique_1").is_err());

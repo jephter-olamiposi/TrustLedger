@@ -82,11 +82,7 @@ fn main() -> ExitCode {
         }
     }
 
-    println!("================================================================================");
-    println!(" TrustLedger Deterministic Simulation Testing (DST) Harness");
-    println!(" Method: Deterministic discrete-event seeded pseudo-random injection");
-    println!("         reproducing partitions, crashes, packet loss, duplicates, and recovery");
-    println!("================================================================================");
+    println!("TrustLedger Deterministic Simulation Testing (DST) Harness");
 
     if let Some(count) = fuzz_count {
         println!("==> Starting fuzz run across {count} randomized simulation seeds...");
@@ -160,10 +156,8 @@ fn main() -> ExitCode {
         }
     }
 
-    println!("\n================================================================================");
-    println!("✅ All {} simulation scenarios PASSED!", reports.len());
-    println!("   Invariants verified: Wealth Conservation (Zero Drift), Log Agreement.");
-    println!("================================================================================");
+    println!("\nAll {} simulation scenarios passed.", reports.len());
+    println!("Invariants verified: Wealth Conservation (Zero Drift), Log Agreement.");
 
     ExitCode::SUCCESS
 }

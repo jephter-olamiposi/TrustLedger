@@ -13,15 +13,10 @@ path = "src/main.rs"
 
 [dependencies]
 ledger-core = { path = "../crates/ledger-core", version = "0.1" }
-wal = { path = "../crates/wal", version = "0.1" }
-observability = { path = "../crates/observability", version = "0.1" }
 rand = "0.8"
 rand_chacha = "0.3"
 thiserror.workspace = true
-serde = { workspace = true, features = ["derive"] }
-
-[dev-dependencies]
-tempfile.workspace = true
+serde.workspace = true
 
 [lints]
 workspace = true

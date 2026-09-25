@@ -1,7 +1,7 @@
 //! Append-only Merkle Mountain Range commitments for settlement proofs.
 //!
 //! This crate builds deterministic MMR roots over ledger batches and exposes
-//! inclusion-proof helpers for audit and verification paths.
+//! inclusion-proof primitives for audit and verification paths.
 
 #![deny(missing_docs)]
 #![deny(unsafe_code)]

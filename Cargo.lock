@@ -749,7 +749,6 @@ dependencies = [
  "simulator",
  "solana-program",
  "solana-settle",
- "tempfile",
  "thiserror 2.0.20",
  "tokio",
 ]
@@ -1842,16 +1841,12 @@ checksum = "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
 name = "raft"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "ledger-core",
  "openraft",
  "postcard",
  "serde",
- "tempfile",
  "thiserror 2.0.20",
  "tokio",
- "tracing",
- "wal",
 ]
 
 [[package]]
@@ -2281,13 +2276,10 @@ name = "simulator"
 version = "0.1.0"
 dependencies = [
  "ledger-core",
- "observability",
  "rand 0.8.8",
  "rand_chacha 0.3.1",
  "serde",
- "tempfile",
  "thiserror 2.0.20",
- "wal",
 ]
 
 [[package]]

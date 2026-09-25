@@ -78,20 +78,19 @@ impl WebhookVerifier {
     ///
     /// # Errors
     ///
-    /// Returns [`WebhookError::ExpiredTimestamp`] if the event is older than tolerance.
+    /// Returns [`WebhookError::ExpiredTimestamp`] if the event is older than tolerance
+    /// or skewed into the future beyond tolerance.
     pub fn verify_freshness(
         event_time: u64,
         current_time: u64,
         max_allowed_seconds: u64,
     ) -> Result<(), WebhookError> {
-        if current_time > event_time {
-            let age = current_time - event_time;
-            if age > max_allowed_seconds {
-                return Err(WebhookError::ExpiredTimestamp {
-                    age_seconds: age,
-                    max_allowed: max_allowed_seconds,
-                });
-            }
+        let age = current_time.abs_diff(event_time);
+        if age > max_allowed_seconds {
+            return Err(WebhookError::ExpiredTimestamp {
+                age_seconds: age,
+                max_allowed: max_allowed_seconds,
+            });
         }
         Ok(())
     }

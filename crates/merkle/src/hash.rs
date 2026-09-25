@@ -1,4 +1,4 @@
-//! Hash helpers and domain separation for the MMR.
+//! Cryptographic hashing and domain separation for the MMR.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

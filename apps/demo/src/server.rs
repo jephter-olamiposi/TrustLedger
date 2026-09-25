@@ -28,9 +28,13 @@ pub async fn start_server(state: Arc<AppState>, addr: SocketAddr) -> Result<(), 
 pub async fn run_default_server(port: u16) -> Result<(), DemoError> {
     let secret = b"super-secret-webhook-key-2026".to_vec();
     let state = Arc::new(AppState::new(secret)?);
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let host = std::env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
+    let ip = host
+        .parse::<std::net::IpAddr>()
+        .map_err(|e| DemoError::Server(format!("invalid HOST address '{host}': {e}")))?;
+    let addr = SocketAddr::from((ip, port));
 
     start_server(state, addr)
         .await
-        .map_err(|e| DemoError::Webhook(crate::error::WebhookError::PayloadError(e.to_string())))
+        .map_err(|e| DemoError::Server(e.to_string()))
 }

@@ -24,6 +24,10 @@ pub enum DemoError {
     /// Reconciliation drift or mismatch failures.
     #[error("reconciliation error: {0}")]
     Reconciliation(#[from] ReconciliationError),
+
+    /// HTTP server or network bind failure.
+    #[error("server error: {0}")]
+    Server(String),
 }
 
 /// Payment lifecycle failures.

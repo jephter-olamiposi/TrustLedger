@@ -41,14 +41,20 @@ struct SnapshotPayload {
 #[derive(Debug)]
 pub struct LedgerSnapshotBuilder {
     meta: SnapshotMeta<u64, openraft::BasicNode>,
-    payload: Vec<u8>,
+    snapshot_payload: SnapshotPayload,
 }
 
 impl RaftSnapshotBuilder<TypeConfig> for LedgerSnapshotBuilder {
     async fn build_snapshot(&mut self) -> Result<Snapshot<TypeConfig>, StorageError<u64>> {
+        let payload = postcard::to_allocvec(&self.snapshot_payload).map_err(|e| {
+            StorageIOError::read_state_machine(AnyError::error(format!(
+                "failed to serialize snapshot payload: {e}"
+            )))
+        })?;
+
         Ok(Snapshot {
             meta: self.meta.clone(),
-            snapshot: Box::new(Cursor::new(self.payload.clone())),
+            snapshot: Box::new(Cursor::new(payload)),
         })
     }
 }
@@ -160,9 +166,10 @@ impl RaftStateMachine<TypeConfig> for LedgerStateMachine {
             journal: inner.ledger.journal().to_vec(),
         };
 
-        let payload = postcard::to_allocvec(&snapshot_payload).unwrap_or_default();
-
-        LedgerSnapshotBuilder { meta, payload }
+        LedgerSnapshotBuilder {
+            meta,
+            snapshot_payload,
+        }
     }
 
     async fn begin_receiving_snapshot(

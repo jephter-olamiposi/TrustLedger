@@ -162,9 +162,6 @@ cargo run -p simulator -- --scenario all --seed 42 --steps 200
 
 # Verify settlement receipt
 cargo run -p solana-settle --bin verifier -- --receipt receipt.json
-
-# Local 3-node cluster
-docker compose -f docker/docker-compose.yml up -d
 ```
 
 ## Design notes

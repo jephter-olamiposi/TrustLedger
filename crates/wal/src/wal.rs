@@ -159,17 +159,12 @@ impl Wal {
         Ok(range.start)
     }
 
-    /// Append a batch of record payloads sequentially, committing them with a single `sync_data` call.
+    /// Appends a batch of record payloads sequentially, committing them with a single `sync_data` call.
     ///
-    /// The entire batch is validated and encoded into an in-memory buffer before any bytes are
-    /// written to disk. If any individual payload exceeds the configured maximum size, the function
-    /// returns an error immediately without modifying the write buffer or disk state.
-    ///
-    /// If `WalOptions::sync_per_append` is enabled, all records in the batch are committed with
-    /// a single fsync, eliminating the physical per-transfer fsync bottleneck.
+    /// Validates all payloads in memory before writing. If `WalOptions::sync_per_append` is
+    /// enabled, all records are flushed with a single fsync.
     ///
     /// Returns the contiguous sequence range `start_seq..end_seq` assigned to the batch.
-    /// If `payloads` is empty, returns `self.next_seq..self.next_seq` without performing disk I/O.
     ///
     /// # Errors
     ///

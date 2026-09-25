@@ -1,4 +1,4 @@
-//! Receipt generation and verification helpers for settlement proofs.
+//! Receipt generation and cryptographic verification for settlement proofs.
 
 use merkle::{Hash32, MmrProof, ProofError};
 use serde::{Deserialize, Serialize};

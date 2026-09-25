@@ -286,7 +286,7 @@ const DASHBOARD_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
                     </div>
 
                     <div id="simOutputBox" class="p-3 rounded-xl bg-slate-900 text-slate-200 text-[11px] font-mono space-y-1 max-h-24 overflow-y-auto border border-slate-800 shadow-inner">
-                        <div class="text-slate-400">// Select a scenario above and execute chaos test.</div>
+                        <div class="text-slate-400">Select a scenario above and execute chaos test.</div>
                     </div>
 
                     <button onclick="runSimulator()" id="btnRunSim" class="w-full py-2.5 px-4 bg-rose-600 hover:bg-rose-700 text-white font-semibold rounded-xl text-xs transition flex items-center justify-center gap-2 shadow-sm shadow-rose-600/20 cursor-pointer">
@@ -575,13 +575,11 @@ const DASHBOARD_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
                 document.getElementById('displayLatestRoot').title = data.latest_root_hex;
             }
 
-            // Display Clearing Vault Reserve in Header
             const vault = data.accounts.find(a => a.id === 100);
             if (vault) {
                 document.getElementById('displayVaultBalance').innerText = '$' + (vault.net_balance / 1000000).toFixed(2) + ' USDC';
             }
 
-            // Render 4 Wallets in Light Theme (Alice, Bob, Charlie, Acme Corp)
             const walletContainer = document.getElementById('walletCardsContainer');
             let walletHtml = '';
             for (const a of data.accounts) {
@@ -645,7 +643,6 @@ const DASHBOARD_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             }
             walletContainer.innerHTML = walletHtml;
 
-            // Reconciliation Status
             const recon = data.reconciliation;
             const isClean = recon.status === 'Clean';
             const driftFormatted = (recon.drift / 1000000).toFixed(2);
@@ -676,7 +673,6 @@ const DASHBOARD_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             document.getElementById('reconLedgerTotal').innerText = '$' + (recon.ledger_settled_total / 1000000).toFixed(2);
             document.getElementById('reconChainTotal').innerText = '$' + (recon.chain_settled_total / 1000000).toFixed(2);
 
-            // Pending Solana L1 Queue Calculation
             const pendingTransfers = data.payments.filter(p => p.state === 'Captured' && !p.settlement_batch_seq);
             const pendingCount = pendingTransfers.length;
             const pendingAmount = pendingTransfers.reduce((sum, p) => sum + p.amount, 0);
@@ -700,14 +696,12 @@ const DASHBOARD_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
                 }
             }
 
-            // Payments Table (Newest first!)
             const tbody = document.getElementById('paymentsTableBody');
             document.getElementById('paymentCountBadge').innerText = `${data.payments.length} records`;
 
             if (data.payments.length === 0) {
                 tbody.innerHTML = `<tr><td colspan="7" class="p-6 text-center text-slate-400 font-sans">No transactions recorded yet. Send a payment on the left or click "Run 1-Click Demo Pipeline".</td></tr>`;
             } else {
-                // Ensure newest orders appear first at the top
                 const sortedPayments = [...data.payments].sort((a, b) => b.id - a.id);
                 let rows = '';
                 for (const p of sortedPayments) {
@@ -781,7 +775,6 @@ const DASHBOARD_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
                 tbody.innerHTML = rows;
             }
 
-            // General Ledger Accounts Table
             const accTbody = document.getElementById('accountsTableBody');
             let accRows = '';
             for (const a of data.accounts) {
@@ -1062,8 +1055,8 @@ const DASHBOARD_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
             btn.innerHTML = `<span>⏳</span> Injecting Faults...`;
 
             output.innerHTML = `
-                <div class="text-indigo-400 font-bold">// Initializing virtual DST cluster: ${scenario}</div>
-                <div class="text-slate-400">// Simulating network faults and torn-write recoveries...</div>
+                <div class="text-indigo-400 font-bold">Initializing virtual DST cluster: ${scenario}</div>
+                <div class="text-slate-400">Simulating network faults and torn-write recoveries...</div>
             `;
 
             try {
