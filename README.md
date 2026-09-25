@@ -8,6 +8,32 @@ The project includes a durable write ahead log, bounded asynchronous ingestion, 
 
 The main idea is to keep the accounting state small and deterministic while making everything around it explicit.
 
+## Architecture
+
+```mermaid
+flowchart TB
+    subgraph INGRESS ["Ingress & Coordination"]
+        Client["Clients (gRPC / HTTP)"] --> Queue["Bounded Ingress Queue"]
+        Queue --> Engine["Micro-Batch Engine (512 ops / 2ms)"]
+    end
+
+    subgraph STORAGE_CONSENSUS ["Persistence & Consensus"]
+        Engine --> WAL["Durable WAL (LETW Framing + CRC32C)"]
+        Engine --> Raft["Consensus (3-Node OpenRaft)"]
+    end
+
+    subgraph STATE_MACHINE ["Accounting Core"]
+        Raft --> Core["Ledger Core (Double-Entry Invariants)"]
+        Core --> Journal["Append-Only Event Journal"]
+    end
+
+    subgraph SETTLEMENT ["Cryptographic Settlement"]
+        Journal --> MMR["Merkle Mountain Range (Blake3)"]
+        MMR --> Solana["Solana Settlement Program (PDA)"]
+        Solana -.-> Verifier["Standalone Verifier CLI"]
+    end
+```
+
 ## The system
 
 A transfer can exist as a pending hold before it becomes a posted transfer.
